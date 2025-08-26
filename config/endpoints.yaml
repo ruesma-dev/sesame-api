@@ -1,0 +1,5 @@
+# config/endpoints.yaml
+sesame:
+  token_info: "/core/v3/info"
+  employees_list: "/core/v3/employees"
+  employees_create: "/core/v3/employees"  # por si luego quieres crear; ahora no se usa

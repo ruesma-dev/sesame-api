@@ -1,0 +1,8 @@
+# requirements.txt
+pydantic
+requests
+python-dotenv
+PyYAML
+tenacity
+pandas
+email-validator
