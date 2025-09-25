@@ -1,0 +1,29 @@
+{
+  "base_url": "https://api-eu4.sesametime.com",
+  "auth_scheme": "Bearer",
+  "token_masked": "80325f...0ebac3",
+  "parsed_company": {
+    "id": "602fa91b-f0f4-4619-9181-eeb0cd2906c0",
+    "name": "Ruesma",
+    "language": "es-ES",
+    "notificationEmail": "pgris@ruesma.es"
+  },
+  "raw_response": {
+    "data": {
+      "company": {
+        "createdAt": "2025-07-29T14:19:12+00:00",
+        "id": "602fa91b-f0f4-4619-9181-eeb0cd2906c0",
+        "language": "es-ES",
+        "name": "Ruesma",
+        "notificationEmail": "pgris@ruesma.es",
+        "updatedAt": "2025-09-02T11:19:02+00:00"
+      }
+    },
+    "meta": {
+      "currentPage": 1,
+      "lastPage": 1,
+      "total": 1,
+      "perPage": 1
+    }
+  }
+}
