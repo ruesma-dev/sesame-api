@@ -3,175 +3,229 @@ from __future__ import annotations
 
 import calendar
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional
 
 from application.interfaces.sesame_port import SesamePort
+from domain.models.employee import Employee
 from domain.models.work_entry import WorkEntry
 from domain.models.hours_bag_history import HoursBagHistory
 
 
+SAFE_PAGE_SIZE = 200
+BATCH_EMPLOYEE_IDS = 20
+
+
 @dataclass
-class EmployeeHours:
-    employee_id: str
-    employee_name: str
+class HoursByEmployeeRow:
+    employee_id: Optional[str]
+    employee_name: Optional[str]
     employee_email: Optional[str]
     total_seconds: int
 
 
 @dataclass
-class OfficeHours:
-    office_id: str
+class HoursByOfficeRow:
+    office_id: Optional[str]
     total_seconds: int
 
 
-@dataclass
-class HoursBagTotals:
-    employee_id: str
-    employee_name: str
-    seconds_sum: int
-    check_seconds_sum: int
-    check_seconds_with_variation_sum: int
-
-
 class TimeAnalyticsUseCases:
-    """Cálculos de horas a partir de /schedule/v1/work-entries y bolsa de horas."""
+    def __init__(self, repo: SesamePort) -> None:
+        self._repo = repo
 
-    def __init__(self, sesame_repo: SesamePort) -> None:
-        self._repo = sesame_repo
-
-    # -------- helpers --------
-    @staticmethod
-    def _parse_dt(dt: Optional[datetime | str]) -> Optional[datetime]:
-        if dt is None:
-            return None
-        if isinstance(dt, datetime):
-            return dt
-        try:
-            return datetime.fromisoformat(dt)
-        except Exception:
-            return None
-
-    @classmethod
-    def _seconds_for_entry(cls, e: WorkEntry) -> int:
-        if e.worked_seconds is not None:
-            try:
-                return int(e.worked_seconds)
-            except Exception:
-                pass
-        start = cls._parse_dt(e.in_at)
-        end = cls._parse_dt(e.out_at)
-        if start and end:
-            delta = end - start
-            return max(0, int(delta.total_seconds()))
-        return 0
-
-    @staticmethod
-    def _month_bounds(year: int, month: int) -> Tuple[str, str]:
+    # ───────────────── Work Entries (todos los empleados, mes) ─────────────────
+    def get_company_work_entries_month(self, *, year: int, month: int) -> List[WorkEntry]:
         last = calendar.monthrange(year, month)[1]
-        return f"{year:04d}-{month:02d}-01", f"{year:04d}-{month:02d}-{last:02d}"
+        date_from = f"{year:04d}-{month:02d}-01"
+        date_to = f"{year:04d}-{month:02d}-{last:02d}"
 
-    # -------- public API (work-entries) --------
-    def get_company_work_entries_month(
-        self, *, year: int, month: int, page_size: int = 1000
-    ) -> List[WorkEntry]:
-        date_from, date_to = self._month_bounds(year, month)
-        return self._repo.list_work_entries(
-            employee_id=None, date_from=date_from, date_to=date_to, page_size=page_size
-        )
+        employees: List[Employee] = self._repo.list_employees(only_active=True, page=1, page_size=SAFE_PAGE_SIZE)
+        entries: List[WorkEntry] = []
 
-    def hours_by_employee(self, entries: Iterable[WorkEntry]) -> List[EmployeeHours]:
-        totals: Dict[str, EmployeeHours] = {}
-        for e in entries:
-            emp_id = e.employee_id or "UNKNOWN"
-            secs = self._seconds_for_entry(e)
-            if emp_id not in totals:
-                full_name = " ".join(filter(None, [e.employee_first_name, e.employee_last_name])).strip()
-                totals[emp_id] = EmployeeHours(
-                    employee_id=emp_id,
-                    employee_name=full_name or emp_id,
-                    employee_email=str(e.employee_email) if e.employee_email else None,
+        for emp in employees:
+            page = 1
+            while True:
+                chunk = self._repo.list_work_entries(
+                    employee_id=emp.id, date_from=date_from, date_to=date_to, page=page, page_size=SAFE_PAGE_SIZE
+                )
+                if not chunk:
+                    break
+                entries.extend(chunk)
+                if len(chunk) < SAFE_PAGE_SIZE:
+                    break
+                page += 1
+
+        return entries
+
+    def get_employee_work_entries_month(self, *, employee_id: str, year: int, month: int) -> List[WorkEntry]:
+        last = calendar.monthrange(year, month)[1]
+        date_from = f"{year:04d}-{month:02d}-01"
+        date_to = f"{year:04d}-{month:02d}-{last:02d}"
+
+        out: List[WorkEntry] = []
+        page = 1
+        while True:
+            chunk = self._repo.list_work_entries(
+                employee_id=employee_id, date_from=date_from, date_to=date_to, page=page, page_size=SAFE_PAGE_SIZE
+            )
+            if not chunk:
+                break
+            out.extend(chunk)
+            if len(chunk) < SAFE_PAGE_SIZE:
+                break
+            page += 1
+        return out
+
+    # ───────────────── Agregaciones (work entries) ─────────────────
+    @staticmethod
+    def hours_by_employee(entries: Iterable[WorkEntry]) -> List[HoursByEmployeeRow]:
+        acc: Dict[str, HoursByEmployeeRow] = {}
+        for w in entries:
+            key = w.employee_id or "unknown"
+            if key not in acc:
+                acc[key] = HoursByEmployeeRow(
+                    employee_id=w.employee_id,
+                    employee_name=" ".join(filter(None, [w.employee_first_name, w.employee_last_name])) or None,
+                    employee_email=w.employee_email,
                     total_seconds=0,
                 )
-            totals[emp_id].total_seconds += secs
-        return sorted(totals.values(), key=lambda x: x.total_seconds, reverse=True)
+            acc[key].total_seconds += int(w.worked_seconds or 0)
+        return list(acc.values())
 
-    def hours_by_office(self, entries: Iterable[WorkEntry]) -> List[OfficeHours]:
-        totals: Dict[str, int] = {}
-        for e in entries:
-            secs = self._seconds_for_entry(e)
-            office_ids = []
-            if e.in_office_id:
-                office_ids.append(e.in_office_id)
-            if e.out_office_id and e.out_office_id != e.in_office_id:
-                office_ids.append(e.out_office_id)
-            if not office_ids:
-                office_ids = ["UNKNOWN"]
+    @staticmethod
+    def hours_by_office(entries: Iterable[WorkEntry]) -> List[HoursByOfficeRow]:
+        acc: Dict[str, HoursByOfficeRow] = {}
+        for w in entries:
+            key = (w.in_office_id or w.out_office_id or "unknown")
+            if key not in acc:
+                acc[key] = HoursByOfficeRow(office_id=key if key != "unknown" else None, total_seconds=0)
+            acc[key].total_seconds += int(w.worked_seconds or 0)
+        return list(acc.values())
 
-            share = max(1, len(office_ids))
-            for oid in office_ids:
-                totals[oid] = totals.get(oid, 0) + int(secs / share)
-
-        result = [OfficeHours(office_id=k, total_seconds=v) for k, v in totals.items()]
-        return sorted(result, key=lambda x: x.total_seconds, reverse=True)
-
-    def coordinates_rows(self, entries: Iterable[WorkEntry]) -> List[Dict[str, object]]:
+    @staticmethod
+    def coordinates_rows(entries: Iterable[WorkEntry]) -> List[Dict[str, object]]:
         rows: List[Dict[str, object]] = []
-        for e in entries:
+        for w in entries:
             rows.append(
                 {
-                    "id": e.id,
-                    "employee_id": e.employee_id,
-                    "employee_name": " ".join(filter(None, [e.employee_first_name, e.employee_last_name])) or "",
-                    "in_at": e.in_at,
-                    "in_latitude": e.in_latitude,
-                    "in_longitude": e.in_longitude,
-                    "in_office_id": e.in_office_id,
-                    "out_at": e.out_at,
-                    "out_latitude": e.out_latitude,
-                    "out_longitude": e.out_longitude,
-                    "out_office_id": e.out_office_id,
+                    "work_entry_id": w.id,
+                    "employee_id": w.employee_id,
+                    "employee_name": " ".join(filter(None, [w.employee_first_name, w.employee_last_name])) or None,
+                    "in_at": w.in_at,
+                    "in_latitude": w.in_latitude,
+                    "in_longitude": w.in_longitude,
+                    "out_at": w.out_at,
+                    "out_latitude": w.out_latitude,
+                    "out_longitude": w.out_longitude,
+                    "in_office_id": w.in_office_id,
+                    "out_office_id": w.out_office_id,
                 }
             )
         return rows
 
-    # -------- public API (hours-bag) --------
+    # ───────────────── Bolsa de horas ─────────────────
     def get_hours_bag_month(
         self,
         *,
         year: int,
         month: int,
         employee_ids: Optional[List[str]] = None,
-        page_size: int = 1000,
+        hours_bag_rule_ids: Optional[List[str]] = None,
     ) -> List[HoursBagHistory]:
-        date_from, date_to = self._month_bounds(year, month)
-        return self._repo.list_hours_bag_rule_history(
-            date_from=date_from,
-            date_to=date_to,
-            employee_ids=employee_ids,
-            hours_bag_rule_ids=None,
-            page=1,
-            page_size=page_size,
-        )
+        last = calendar.monthrange(year, month)[1]
+        date_from = f"{year:04d}-{month:02d}-01"
+        date_to = f"{year:04d}-{month:02d}-{last:02d}"
+
+        if employee_ids:
+            ids = [x for x in employee_ids if x]
+        else:
+            employees = self._repo.list_employees(only_active=True, page=1, page_size=SAFE_PAGE_SIZE)
+            ids = [e.id for e in employees if e.id]
+
+        out: List[HoursBagHistory] = []
+
+        def chunks(seq: List[str], size: int):
+            for i in range(0, len(seq), size):
+                yield seq[i:i + size]
+
+        rule_ids = [r for r in (hours_bag_rule_ids or []) if r] or None
+
+        for batch in chunks(ids, BATCH_EMPLOYEE_IDS):
+            page = 1
+            while True:
+                chunk = self._repo.list_hours_bag_rule_history(
+                    date_from=date_from,
+                    date_to=date_to,
+                    employee_ids=batch,
+                    hours_bag_rule_ids=rule_ids,  # None ⇒ omitido
+                    page=page,
+                    page_size=SAFE_PAGE_SIZE,
+                )
+                if not chunk:
+                    break
+                out.extend(chunk)
+                if len(chunk) < SAFE_PAGE_SIZE:
+                    break
+                page += 1
+
+        return out
 
     @staticmethod
-    def hours_bag_totals_by_employee(items: Iterable[HoursBagHistory]) -> List[HoursBagTotals]:
-        agg: Dict[str, HoursBagTotals] = {}
+    def hours_bag_rows(items: Iterable[HoursBagHistory]) -> List[Dict[str, object]]:
+        rows: List[Dict[str, object]] = []
         for it in items:
-            eid = it.employee_id or "UNKNOWN"
-            if eid not in agg:
-                agg[eid] = HoursBagTotals(
-                    employee_id=eid,
-                    employee_name=it.employee_name or eid,
-                    seconds_sum=0,
-                    check_seconds_sum=0,
-                    check_seconds_with_variation_sum=0,
-                )
-            agg[eid].seconds_sum += int(it.seconds or 0)
-            agg[eid].check_seconds_sum += int(it.check_seconds or 0)
-            agg[eid].check_seconds_with_variation_sum += int(it.check_seconds_with_variation or 0)
+            rows.append(
+                {
+                    "id": it.id,
+                    "date": it.date,
+                    "employee_id": it.employee_id,
+                    "employee_name": it.employee_name,
+                    "hours_bag_rule_id": it.hours_bag_rule_id,
+                    "hours_bag_rule_name": it.hours_bag_rule_name,
+                    "hours_bag_rule_variation": it.hours_bag_rule_variation,
+                    "seconds": it.seconds,
+                    "check_seconds": it.check_seconds,
+                    "check_seconds_with_variation": it.check_seconds_with_variation,
+                }
+            )
+        return rows
+
+    @staticmethod
+    def hours_bag_totals_by_employee(items: Iterable[HoursBagHistory]) -> List[Dict[str, object]]:
+        """
+        Agregado con las claves que espera CsvRepository.save_hours_bag_totals_by_employee:
+          employee_id, employee_name,
+          seconds_sum, check_seconds_sum, check_seconds_with_variation_sum,
+          hours_sum, check_hours_sum, check_hours_with_variation_sum
+        """
+        acc: Dict[str, Dict[str, object]] = {}
+        for it in items:
+            key = it.employee_id or "unknown"
+            row = acc.get(key)
+            if row is None:
+                row = {
+                    "employee_id": it.employee_id,
+                    "employee_name": it.employee_name,
+                    "seconds_sum": 0,
+                    "check_seconds_sum": 0,
+                    "check_seconds_with_variation_sum": 0,
+                    "hours_sum": 0.0,
+                    "check_hours_sum": 0.0,
+                    "check_hours_with_variation_sum": 0.0,
+                }
+                acc[key] = row
+            row["seconds_sum"] = int(row["seconds_sum"]) + int(it.seconds or 0)
+            row["check_seconds_sum"] = int(row["check_seconds_sum"]) + int(it.check_seconds or 0)
+            row["check_seconds_with_variation_sum"] = int(row["check_seconds_with_variation_sum"]) + int(
+                it.check_seconds_with_variation or 0
+            )
+
+        for row in acc.values():
+            row["hours_sum"] = round(int(row["seconds_sum"]) / 3600.0, 2)
+            row["check_hours_sum"] = round(int(row["check_seconds_sum"]) / 3600.0, 2)
+            row["check_hours_with_variation_sum"] = round(int(row["check_seconds_with_variation_sum"]) / 3600.0, 2)
+
         return sorted(
-            agg.values(),
-            key=lambda x: x.check_seconds_with_variation_sum or x.check_seconds_sum,
-            reverse=True,
+            acc.values(),
+            key=lambda r: ((r.get("employee_name") or "").lower(), (r.get("employee_id") or "")),
         )

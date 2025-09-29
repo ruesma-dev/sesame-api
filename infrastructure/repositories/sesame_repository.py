@@ -1,422 +1,544 @@
 # infrastructure/repositories/sesame_repository.py
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
-from requests import Response
-from tenacity import retry, stop_after_attempt, wait_exponential
+import requests
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from application.interfaces.sesame_port import SesamePort
 from config.settings import Settings
-from domain.models.employee import Employee
-from domain.models.token_info import TokenInfo, CompanyInfo
-from domain.models.time_entry import TimeEntry
-from domain.models.work_entry import WorkEntry
-from domain.models.hours_bag_history import HoursBagHistory
 from infrastructure.http.http_client import HttpClient
+
+# Domain models
+from domain.models.employee import Employee as EmployeeModel
+from domain.models.work_entry import WorkEntry as WorkEntryModel
+from domain.models.time_entry import TimeEntry as TimeEntryModel
+from domain.models.hours_bag_history import HoursBagHistory as HoursBagHistoryModel
+from domain.models.employee_office_assignation import (
+    EmployeeOfficeAssignation as EmployeeOfficeAssignationModel,
+)
+from domain.models.office import Office as OfficeModel
+
+# Puerto (interfaz) de aplicación
+from application.interfaces.sesame_port import SesamePort
+
+
+SAFE_LIMIT_DEFAULT = 100
 
 
 class SesameRepositoryImpl(SesamePort):
-    """Adaptador HTTP a la API de Sesame (Core v3 + Project v1 + Schedule v1)."""
-
-    def __init__(self, settings: Settings, http: HttpClient) -> None:
+    def __init__(self, settings: Settings, http: HttpClient, *, endpoints: Dict[str, str]) -> None:
         self._settings = settings
         self._http = http
-        self._logger = logging.getLogger(self.__class__.__name__)
-
-        endpoints = settings.endpoints.get("sesame", {})
-        # Company / Employees
-        self._token_info_path: str = endpoints.get("token_info", "/core/v3/info")
-        self._employees_list_path: str = endpoints.get("employees_list", "/core/v3/employees")
-        self._employees_create_path: str = endpoints.get("employees_create", "/core/v3/employees")
-        # Time entries
-        self._time_entries_list_path: str = endpoints.get("time_entries_list", "/project/v1/time-entries")
-        # Work entries
-        self._work_entries_list_path: str = endpoints.get("work_entries_list", "/schedule/v1/work-entries")
-        self._work_entries_create_path: str = endpoints.get("work_entries_create", "/schedule/v1/work-entries")
-        self._work_entries_update_tmpl: str = endpoints.get("work_entries_update", "/schedule/v1/work-entries/{id}")
-        self._work_entries_delete_tmpl: str = endpoints.get("work_entries_delete", "/schedule/v1/work-entries/{id}")
-        self._work_entries_clock_in_path: str = endpoints.get(
-            "work_entries_clock_in", "/schedule/v1/work-entries/clock-in"
-        )
-        self._work_entries_clock_out_path: str = endpoints.get(
-            "work_entries_clock_out", "/schedule/v1/work-entries/clock-out"
-        )
-        # Hours bag
-        self._hours_bag_rule_history_list_path: str = endpoints.get(
-            "hours_bag_rule_history_list", "/schedule/v1/hours-bag-rule-history"
-        )
+        self._ep: Dict[str, str] = endpoints
+        self._log = logging.getLogger(self.__class__.__name__)
 
     # ─────────────────────────────────────────────────────────────
     # Helpers
     # ─────────────────────────────────────────────────────────────
-    def _parse_json_or_raise(self, resp: Response, ctx: str) -> Dict[str, Any]:
-        status = resp.status_code
-        ctype = resp.headers.get("Content-Type", "")
-        text_snippet = (resp.text or "")[:400]
-
-        if status == 401:
-            raise RuntimeError(f"{ctx}: 401 Unauthorized. Revisa token/esquema de auth.")
-        if status == 204:
-            return {}
-
+    @staticmethod
+    def _safe_limit(limit: Optional[int]) -> int:
         try:
-            return resp.json()
+            if limit is None:
+                return SAFE_LIMIT_DEFAULT
+            return min(int(limit), SAFE_LIMIT_DEFAULT)
         except Exception:
+            return SAFE_LIMIT_DEFAULT
+
+    def _parse_json_or_raise(self, resp: requests.Response, msg: str) -> Dict[str, Any]:
+        ctype = resp.headers.get("Content-Type", "")
+        try:
+            body = resp.json()
+        except Exception:
+            text_snippet = (resp.text or "")[:300]
             raise RuntimeError(
-                f"{ctx}: respuesta no-JSON. status={status} content-type={ctype} "
-                f"base_url={self._http.base_url} path={resp.request.path_url} "
+                f"{msg}: respuesta no-JSON. status={resp.status_code} content-type={ctype} "
+                f"base_url={self._http.base_url} path={getattr(resp.request, 'path_url', '')} "
                 f"body_snippet={text_snippet!r}"
-            ) from None
+            )
+        if not (200 <= resp.status_code < 300):
+            emsg = None
+            if isinstance(body, dict):
+                err = body.get("error") or {}
+                if isinstance(err, dict):
+                    emsg = err.get("message") or err.get("errors") or "Unknown error"
+                else:
+                    emsg = str(err)
+            raise RuntimeError(
+                f"{msg}: HTTP {resp.status_code}. base_url={self._http.base_url} path={getattr(resp.request, 'path_url', '')} "
+                f"content-type={ctype} body_snippet={str(body)[:300]!r}"
+            )
+        return body if isinstance(body, dict) else {"data": body}
 
     @staticmethod
-    def _extract_items_list(body: Dict[str, Any], *, ctx: str) -> List[Dict[str, Any]]:
-        """Normaliza contenedores tipo {'data': [...]} o variantes."""
-        data = body.get("data", body)
-
+    def _get_data_list(body: Dict[str, Any]) -> List[Any]:
+        data = body.get("data")
         if isinstance(data, list):
-            return [x if isinstance(x, dict) else {"raw": x} for x in data]
-
+            return data
         if isinstance(data, dict):
-            for key in ("items", "results", "entries", "list", "data"):
-                val = data.get(key)
-                if isinstance(val, list):
-                    return [x if isinstance(x, dict) else {"raw": x} for x in val]
-            if data and all(isinstance(v, dict) for v in data.values()):
-                return list(data.values())
-            if any(k in data for k in ("id", "employee", "timeEntryIn", "workEntryIn")):
-                return [data]
-
-            keys = list(data.keys())
-            preview = json.dumps({k: data[k] for k in keys[:5]}, ensure_ascii=False, default=str)
-            raise RuntimeError(f"{ctx}: no se encontró lista de items. Claves={keys[:10]} preview={preview}")
-
-        raise RuntimeError(f"{ctx}: estructura inesperada. type(data)={type(data)} value={str(data)[:200]}")
+            return [data]
+        return []
 
     # ─────────────────────────────────────────────────────────────
-    # Security / Company
+    # Token / Company
     # ─────────────────────────────────────────────────────────────
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
-    def get_token_info(self) -> TokenInfo:
-        resp = self._http.get(self._token_info_path)
-        body = self._parse_json_or_raise(resp, "token_info")
-
-        data = body.get("data") or body
-        company = data.get("company") or {}
-        return TokenInfo(
-            company=CompanyInfo(
-                id=str(company.get("id", "")),
-                name=company.get("name"),
-                notification_email=company.get("notificationEmail") or company.get("notification_email"),
-                language=company.get("language"),
-                created_at=company.get("createdAt") or company.get("created_at"),
-                updated_at=company.get("UpdatedAt") or company.get("updatedAt") or company.get("updated_at"),
-            )
-        )
-
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
     def get_token_info_raw(self) -> Dict[str, Any]:
-        """Smoketest: devuelve el cuerpo JSON RAW de /core/v3/info."""
-        resp = self._http.get(self._token_info_path)
+        path = self._ep["token_info"]
+        resp = self._http.get(path)
         return self._parse_json_or_raise(resp, "token_info_raw")
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def get_token_info(self) -> Dict[str, Any]:
+        body = self.get_token_info_raw()
+        company = ((body.get("data") or {}).get("company") or {}) if isinstance(body, dict) else {}
+        parsed_company = {
+            "id": company.get("id"),
+            "name": company.get("name"),
+            "language": company.get("language"),
+            "notificationEmail": company.get("notificationEmail"),
+        }
+        token = self._http.token
+        token_masked = f"{token[:6]}...{token[-6:]}" if isinstance(token, str) and len(token) > 12 else "******"
+        return {
+            "base_url": self._http.base_url,
+            "auth_scheme": self._http.auth_scheme,
+            "token_masked": token_masked,
+            "parsed_company": parsed_company,
+            "raw_response": body,
+        }
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def get_company(self) -> Dict[str, Any]:
+        info = self.get_token_info()
+        return info.get("parsed_company") or {}
 
     # ─────────────────────────────────────────────────────────────
     # Employees
     # ─────────────────────────────────────────────────────────────
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
-    def list_employees(
-        self,
-        *,
-        only_active: Optional[bool] = None,
-        page: int = 1,
-        page_size: int = 100,
-    ) -> List[Employee]:
-        params: Dict[str, Any] = {"page": page, "limit": page_size}
-        if only_active is True:
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def list_employees(self, *, only_active: bool = True, page: int = 1, page_size: int = 100) -> List[EmployeeModel]:
+        path = self._ep["employees_list"]
+        params: Dict[str, Any] = {
+            "page": page,
+            "limit": self._safe_limit(page_size),
+        }
+        if only_active:
+            # Operador "in" documentado por Sesame
             params["status[in]"] = "active"
-        elif only_active is False:
-            params["status[in]"] = "inactive"
 
-        resp = self._http.get(self._employees_list_path, params=params)
+        resp = self._http.get(path, params=params)
         body = self._parse_json_or_raise(resp, "list_employees")
+        items_raw = self._get_data_list(body)
+        return [self._to_domain_employee(it) for it in items_raw if isinstance(it, dict)]
 
-        items_raw = self._extract_items_list(body, ctx="list_employees")
-        employees: List[Employee] = [self._to_domain_employee(it) for it in items_raw]
-        return employees
+    # Opcionales (no obligatorios por el ABC actual, mantenemos placeholders)
+    def create_employee(self, employee: EmployeeModel) -> EmployeeModel:  # pragma: no cover
+        raise NotImplementedError("create_employee no implementado en este microservicio.")
 
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
-    def create_employee(self, employee: Employee) -> Employee:
-        """Crea un empleado (según los campos soportados por la API)."""
-        payload = self._to_wire_create(employee)
-        resp = self._http.post(self._employees_create_path, json=payload)
-        body = self._parse_json_or_raise(resp, "create_employee")
-        container = body.get("data") or body
-        created = container if isinstance(container, dict) else {}
-        return self._to_domain_employee(created)
-
-    def bulk_create_employees(self, employees: Iterable[Employee]) -> List[Employee]:
-        """Crea múltiples empleados en serie (no hay endpoint bulk documentado)."""
-        return [self.create_employee(e) for e in employees]
+    def bulk_create_employees(self, employees: Sequence[EmployeeModel]) -> List[EmployeeModel]:  # pragma: no cover
+        raise NotImplementedError("bulk_create_employees no implementado en este microservicio.")
 
     # ─────────────────────────────────────────────────────────────
-    # Time entries  (/project/v1/time-entries)
+    # Work Entries (LECTURA)
     # ─────────────────────────────────────────────────────────────
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
-    def list_time_entries(
-        self,
-        *,
-        employee_id: Optional[str],
-        date_from: Optional[str],
-        date_to: Optional[str],
-        page: int = 1,
-        page_size: int = 200,
-        extra_params: Optional[Dict[str, Any]] = None,
-    ) -> List[TimeEntry]:
-        params: Dict[str, Any] = {"page": page, "limit": page_size}
-        if employee_id:
-            params["employeeId"] = employee_id
-        if date_from:
-            params["from"] = date_from  # YYYY-MM-DD
-        if date_to:
-            params["to"] = date_to
-        if extra_params:
-            params.update(extra_params)
-
-        resp = self._http.get(self._time_entries_list_path, params=params)
-        body = self._parse_json_or_raise(resp, "list_time_entries")
-        items_raw = self._extract_items_list(body, ctx="list_time_entries")
-        return [self._to_domain_time_entry(it) for it in items_raw]
-
-    # ─────────────────────────────────────────────────────────────
-    # Work entries  (/schedule/v1/work-entries)
-    # ─────────────────────────────────────────────────────────────
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
     def list_work_entries(
         self,
         *,
-        employee_id: Optional[str],
-        date_from: Optional[str],
-        date_to: Optional[str],
+        employee_id: str,
+        date_from: str,
+        date_to: str,
         page: int = 1,
-        page_size: int = 200,
-        extra_params: Optional[Dict[str, Any]] = None,
-    ) -> List[WorkEntry]:
-        params: Dict[str, Any] = {"page": page, "limit": page_size}
-        if employee_id:
-            params["employeeId"] = employee_id
-        if date_from:
-            params["from"] = date_from  # Y-m-d
-        if date_to:
-            params["to"] = date_to
-        if extra_params:
-            params.update(extra_params)
+        page_size: int = 100,
+        order_by: Optional[str] = None,
+    ) -> List[WorkEntryModel]:
+        path = self._ep["work_entries_list"]
+        params: Dict[str, Any] = {
+            "page": page,
+            "limit": self._safe_limit(page_size),
+            "employeeId": employee_id,
+            "from": date_from,
+            "to": date_to,
+        }
+        if order_by:
+            params["orderBy"] = order_by
 
-        resp = self._http.get(self._work_entries_list_path, params=params)
+        resp = self._http.get(path, params=params)
         body = self._parse_json_or_raise(resp, "list_work_entries")
-        items_raw = self._extract_items_list(body, ctx="list_work_entries")
-        return [self._to_domain_work_entry(it) for it in items_raw]
+        items_raw = self._get_data_list(body)
+        return [self._to_domain_work_entry(it) for it in items_raw if isinstance(it, dict)]
 
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
-    def create_work_entry(self, payload: Dict[str, Any]) -> WorkEntry:
-        resp = self._http.post(self._work_entries_create_path, json=payload)
-        body = self._parse_json_or_raise(resp, "create_work_entry")
-        container = body.get("data") or body
-        obj = container if isinstance(container, dict) else {}
-        return self._to_domain_work_entry(obj)
-
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
-    def update_work_entry(self, work_entry_id: str, payload: Dict[str, Any]) -> WorkEntry:
-        path = self._work_entries_update_tmpl.format(id=work_entry_id)
-        # preferimos PUT; usamos POST como fallback si el cliente no lo expone
-        resp = self._http.post(path, json=payload)
-        if resp.status_code in (404, 405):
-            resp = self._http.session.put(
-                f"{self._http.base_url}{path}",
-                headers=self._http._headers(),  # type: ignore[attr-defined]
-                json=payload,
-                timeout=self._http.timeout_seconds,
-            )
-        body = self._parse_json_or_raise(resp, "update_work_entry")
-        container = body.get("data") or body
-        obj = container if isinstance(container, dict) else {}
-        return self._to_domain_work_entry(obj)
-
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
-    def delete_work_entry(self, work_entry_id: str) -> bool:
-        path = self._work_entries_delete_tmpl.format(id=work_entry_id)
-        resp = self._http.session.delete(
-            f"{self._http.base_url}{path}",
-            headers=self._http._headers(),  # type: ignore[attr-defined]
-            timeout=self._http.timeout_seconds,
-        )
-        if resp.status_code in (200, 204):
-            return True
-        body = self._parse_json_or_raise(resp, "delete_work_entry")
-        return bool(body)
-
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
-    def clock_in(
+    # ─────────────────────────────────────────────────────────────
+    # Work Entries (ESCRITURA)
+    # ─────────────────────────────────────────────────────────────
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def create_work_entry(
         self,
         *,
         employee_id: str,
-        coordinates: Optional[Dict[str, float]] = None,
+        in_at: Optional[str] = None,
+        out_at: Optional[str] = None,
+        work_entry_type: Optional[str] = "work",
         work_check_type_id: Optional[str] = None,
         work_break_id: Optional[str] = None,
-    ) -> WorkEntry:
-        payload: Dict[str, Any] = {"employeeId": employee_id}
-        if coordinates:
-            payload["workEntryIn"] = {"coordinates": coordinates}
+        in_latitude: Optional[float] = None,
+        in_longitude: Optional[float] = None,
+        out_latitude: Optional[float] = None,
+        out_longitude: Optional[float] = None,
+        in_office_id: Optional[str] = None,
+        out_office_id: Optional[str] = None,
+    ) -> WorkEntryModel:
+        path = self._ep["work_entries_create"]
+
+        payload: Dict[str, Any] = {
+            "employeeId": employee_id,
+        }
+        if work_entry_type:
+            payload["workEntryType"] = work_entry_type
         if work_check_type_id:
             payload["workCheckTypeId"] = work_check_type_id
         if work_break_id:
             payload["workBreakId"] = work_break_id
 
-        resp = self._http.post(self._work_entries_clock_in_path, json=payload)
-        body = self._parse_json_or_raise(resp, "clock_in")
-        container = body.get("data") or body
-        obj = container if isinstance(container, dict) else {}
-        return self._to_domain_work_entry(obj)
+        if in_at:
+            entry_in: Dict[str, Any] = {"date": in_at}
+            coords: Dict[str, Any] = {}
+            if in_latitude is not None:
+                coords["latitude"] = in_latitude
+            if in_longitude is not None:
+                coords["longitude"] = in_longitude
+            if coords:
+                entry_in["coordinates"] = coords
+            if in_office_id:
+                entry_in["officeId"] = in_office_id
+            payload["workEntryIn"] = entry_in
 
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
+        if out_at:
+            entry_out: Dict[str, Any] = {"date": out_at}
+            coords_o: Dict[str, Any] = {}
+            if out_latitude is not None:
+                coords_o["latitude"] = out_latitude
+            if out_longitude is not None:
+                coords_o["longitude"] = out_longitude
+            if coords_o:
+                entry_out["coordinates"] = coords_o
+            if out_office_id:
+                entry_out["officeId"] = out_office_id
+            payload["workEntryOut"] = entry_out
+
+        resp = self._http.post(path, json=payload)
+        body = self._parse_json_or_raise(resp, "create_work_entry")
+        data = (body.get("data") or {}) if isinstance(body, dict) else {}
+        return self._to_domain_work_entry(data if isinstance(data, dict) else {})
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def update_work_entry(
+        self,
+        *,
+        work_entry_id: str,
+        work_entry_type: Optional[str] = None,
+        in_at: Optional[str] = None,
+        out_at: Optional[str] = None,
+        in_latitude: Optional[float] = None,
+        in_longitude: Optional[float] = None,
+        out_latitude: Optional[float] = None,
+        out_longitude: Optional[float] = None,
+        in_office_id: Optional[str] = None,
+        out_office_id: Optional[str] = None,
+    ) -> WorkEntryModel:
+        path = self._ep["work_entries_update"].replace("{id}", work_entry_id)
+
+        payload: Dict[str, Any] = {}
+        if work_entry_type:
+            payload["workEntryType"] = work_entry_type
+
+        if in_at or in_latitude is not None or in_longitude is not None or in_office_id:
+            entry_in: Dict[str, Any] = {}
+            if in_at:
+                entry_in["date"] = in_at
+            coords: Dict[str, Any] = {}
+            if in_latitude is not None:
+                coords["latitude"] = in_latitude
+            if in_longitude is not None:
+                coords["longitude"] = out_longitude if out_longitude is not None else in_longitude
+            if coords:
+                entry_in["coordinates"] = coords
+            if in_office_id:
+                entry_in["officeId"] = in_office_id
+            payload["workEntryIn"] = entry_in
+
+        if out_at or out_latitude is not None or out_longitude is not None or out_office_id:
+            entry_out: Dict[str, Any] = {}
+            if out_at:
+                entry_out["date"] = out_at
+            coords_o: Dict[str, Any] = {}
+            if out_latitude is not None:
+                coords_o["latitude"] = out_latitude
+            if out_longitude is not None:
+                coords_o["longitude"] = out_longitude
+            if coords_o:
+                entry_out["coordinates"] = coords_o
+            if out_office_id:
+                entry_out["officeId"] = out_office_id
+            payload["workEntryOut"] = entry_out
+
+        resp = self._http.put(path, json=payload)
+        body = self._parse_json_or_raise(resp, "update_work_entry")
+        data = (body.get("data") or {}) if isinstance(body, dict) else {}
+        return self._to_domain_work_entry(data if isinstance(data, dict) else {})
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def delete_work_entry(self, *, work_entry_id: str) -> None:
+        path = self._ep["work_entries_delete"].replace("{id}", work_entry_id)
+        resp = self._http.delete(path)
+        # Si no 2xx lanza error dentro de _parse_json_or_raise
+        self._parse_json_or_raise(resp, "delete_work_entry")
+
+    # Clock in/out
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def clock_in(
+        self,
+        *,
+        employee_id: str,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+        work_check_type_id: Optional[str] = None,
+        work_break_id: Optional[str] = None,
+    ) -> WorkEntryModel:
+        path = self._ep["work_entries_clock_in"]
+        payload: Dict[str, Any] = {"employeeId": employee_id}
+        entry_in: Dict[str, Any] = {}
+        coords: Dict[str, Any] = {}
+        if latitude is not None:
+            coords["latitude"] = latitude
+        if longitude is not None:
+            coords["longitude"] = longitude
+        if coords:
+            entry_in["coordinates"] = coords
+        if entry_in:
+            payload["workEntryIn"] = entry_in
+        if work_check_type_id:
+            payload["workCheckTypeId"] = work_check_type_id
+        if work_break_id:
+            payload["workBreakId"] = work_break_id
+
+        resp = self._http.post(path, json=payload)
+        body = self._parse_json_or_raise(resp, "clock_in")
+        data = (body.get("data") or {}) if isinstance(body, dict) else {}
+        return self._to_domain_work_entry(data if isinstance(data, dict) else {})
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
     def clock_out(
         self,
         *,
         employee_id: str,
-        coordinates: Optional[Dict[str, float]] = None,
-    ) -> WorkEntry:
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+    ) -> WorkEntryModel:
+        path = self._ep["work_entries_clock_out"]
         payload: Dict[str, Any] = {"employeeId": employee_id}
-        if coordinates:
-            payload["workEntryOut"] = {"coordinates": coordinates}
+        entry_out: Dict[str, Any] = {}
+        coords: Dict[str, Any] = {}
+        if latitude is not None:
+            coords["latitude"] = latitude
+        if longitude is not None:
+            coords["longitude"] = longitude
+        if coords:
+            entry_out["coordinates"] = coords
+        if entry_out:
+            payload["workEntryOut"] = entry_out
 
-        resp = self._http.post(self._work_entries_clock_out_path, json=payload)
+        resp = self._http.post(path, json=payload)
         body = self._parse_json_or_raise(resp, "clock_out")
-        container = body.get("data") or body
-        obj = container if isinstance(container, dict) else {}
-        return self._to_domain_work_entry(obj)
+        data = (body.get("data") or {}) if isinstance(body, dict) else {}
+        return self._to_domain_work_entry(data if isinstance(data, dict) else {})
 
     # ─────────────────────────────────────────────────────────────
-    # Hours bag (bolsa de horas)
+    # Time Entries (proyectos)
     # ─────────────────────────────────────────────────────────────
-    @retry(wait=wait_exponential(multiplier=0.5, min=0.5, max=8), stop=stop_after_attempt(3))
-    def list_hours_bag_rule_history(
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def list_time_entries(
         self,
         *,
-        date_from: Optional[str],
-        date_to: Optional[str],
-        employee_ids: Optional[List[str]] = None,
-        hours_bag_rule_ids: Optional[List[str]] = None,
+        employee_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        employee_status: Optional[str] = "active",
         page: int = 1,
-        page_size: int = 200,
-    ) -> List[HoursBagHistory]:
-        params: Dict[str, Any] = {"page": page, "limit": page_size}
+        page_size: int = 100,
+    ) -> List[TimeEntryModel]:
+        path = self._ep["time_entries_list"]
+        params: Dict[str, Any] = {
+            "page": page,
+            "limit": self._safe_limit(page_size),
+        }
+        if employee_id:
+            params["employeeId"] = employee_id
         if date_from:
             params["from"] = date_from
         if date_to:
             params["to"] = date_to
-        if employee_ids:
-            params["employeeIds"] = employee_ids  # repeated param
-        if hours_bag_rule_ids:
-            params["hoursBagRuleIds"] = hours_bag_rule_ids
+        if employee_status:
+            params["employeeStatus"] = employee_status
 
-        resp = self._http.get(self._hours_bag_rule_history_list_path, params=params)
+        resp = self._http.get(path, params=params)
+        body = self._parse_json_or_raise(resp, "list_time_entries")
+        items_raw = self._get_data_list(body)
+        return [self._to_domain_time_entry(it) for it in items_raw if isinstance(it, dict)]
+
+    # ─────────────────────────────────────────────────────────────
+    # Hours Bag Rule History
+    # ─────────────────────────────────────────────────────────────
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def list_hours_bag_rule_history(
+        self,
+        *,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        employee_ids: Optional[Sequence[str]] = None,
+        hours_bag_rule_ids: Optional[Sequence[str]] = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> List[HoursBagHistoryModel]:
+        path = self._ep["hours_bag_rule_history_list"]
+        params: Dict[str, Any] = {
+            "page": page,
+            "limit": self._safe_limit(page_size),
+        }
+        if date_from:
+            params["from"] = date_from
+        if date_to:
+            params["to"] = date_to
+
+        # En Swagger aceptan repetir employeeIds=... varias veces; requests lo hace si pasamos list
+        if employee_ids:
+            params["employeeIds"] = list(employee_ids)
+
+        # hoursBagRuleIds es opcional; si no se conoce, mejor no enviarlo
+        if hours_bag_rule_ids:
+            params["hoursBagRuleIds"] = list(hours_bag_rule_ids)
+
+        resp = self._http.get(path, params=params)
         body = self._parse_json_or_raise(resp, "list_hours_bag_rule_history")
-        items_raw = self._extract_items_list(body, ctx="list_hours_bag_rule_history")
-        return [self._to_domain_hours_bag_history(it) for it in items_raw]
+        items_raw = self._get_data_list(body)
+        return [self._to_domain_hours_bag_history(it) for it in items_raw if isinstance(it, dict)]
+
+    # ─────────────────────────────────────────────────────────────
+    # Employee–Office assignations
+    # ─────────────────────────────────────────────────────────────
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def list_employee_office_assignations(
+        self,
+        *,
+        employee_id: Optional[str] = None,
+        office_id: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> List[EmployeeOfficeAssignationModel]:
+        path = self._ep["employee_office_assignations_list"]
+        params: Dict[str, Any] = {"page": page, "limit": self._safe_limit(page_size)}
+        if employee_id:
+            params["employeeId"] = employee_id
+        if office_id:
+            params["officeId"] = office_id
+
+        resp = self._http.get(path, params=params)
+        body = self._parse_json_or_raise(resp, "list_employee_office_assignations")
+        items_raw = self._get_data_list(body)
+        return [self._to_domain_employee_office_assignation(it) for it in items_raw if isinstance(it, dict)]
+
+    # ─────────────────────────────────────────────────────────────
+    # Offices
+    # ─────────────────────────────────────────────────────────────
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=2), reraise=True,
+           retry=retry_if_exception_type((requests.RequestException, RuntimeError)))
+    def list_offices(self, *, name: Optional[str] = None, page: int = 1, page_size: int = 100) -> List[OfficeModel]:
+        path = self._ep["offices_list"]
+        params: Dict[str, Any] = {"page": page, "limit": self._safe_limit(page_size)}
+        if name:
+            params["name"] = name
+        resp = self._http.get(path, params=params)
+        body = self._parse_json_or_raise(resp, "list_offices")
+        items_raw = self._get_data_list(body)
+        return [self._to_domain_office(it) for it in items_raw if isinstance(it, dict)]
 
     # ─────────────────────────────────────────────────────────────
     # Mapeos
     # ─────────────────────────────────────────────────────────────
     @staticmethod
-    def _to_domain_employee(obj: Dict[str, Any]) -> Employee:
-        from domain.models.employee import Employee as EmployeeModel
-        company = obj.get("company") or {}
+    def _to_domain_employee(obj: Dict[str, Any]) -> EmployeeModel:
+        first_name = obj.get("firstName") or ""
+        last_name = obj.get("lastName") or ""
+        email = obj.get("email") or obj.get("personalMail") or None
+        status = obj.get("status") or None
+        code = obj.get("code")
+        code_str = str(code) if code is not None else None
+
         return EmployeeModel(
-            id=str(obj.get("id") or ""),
-            first_name=obj.get("firstName") or obj.get("first_name") or "",
-            last_name=obj.get("lastName") or obj.get("last_name") or "",
-            email=obj.get("email"),
-            personal_mail=obj.get("personalMail"),
-            work_status=obj.get("workStatus"),
-            image_profile_url=obj.get("imageProfileURL"),
-            code=obj.get("code"),
-            pin=obj.get("pin"),
-            phone=obj.get("phone"),
-            work_phone=obj.get("workPhone"),
-            company_id=company.get("id"),
-            company_name=company.get("name"),
-            company_notification_email=company.get("notificationEmail"),
-            company_language=company.get("language"),
-            company_created_at=company.get("createdAt"),
-            company_updated_at=company.get("UpdatedAt") or company.get("updatedAt"),
-            gender=obj.get("gender"),
-            contract_id=obj.get("contractId"),
-            nid=obj.get("nid"),
-            identity_number_type=obj.get("identityNumberType"),
-            ssn=obj.get("ssn"),
-            price_per_hour=obj.get("pricePerHour"),
-            account_number=obj.get("accountNumber"),
-            date_of_birth=obj.get("dateOfBirth"),
-            created_at=obj.get("createdAt"),
-            updated_at=obj.get("UpdatedAt") or obj.get("updatedAt"),
-            status=obj.get("status"),
-            children=obj.get("children"),
-            disability=obj.get("disability"),
-            address=obj.get("address"),
-            postal_code=obj.get("postalCode"),
-            city=obj.get("city"),
-            province=obj.get("province"),
-            country=obj.get("country"),
-            nationality=obj.get("nationality"),
-            nationalities=obj.get("nationalities"),
-            marital_status=obj.get("maritalStatus"),
-            emergency_phone=obj.get("emergencyPhone"),
-            description=obj.get("description"),
-            salary_range=obj.get("salaryRange"),
-            study_level=obj.get("studyLevel"),
-            professional_category_code=obj.get("professionalCategoryCode"),
-            professional_category_description=obj.get("professionalCategoryDescription"),
-            bic=obj.get("bic"),
-            job_charge_id=obj.get("jobChargeId"),
-            job_charge_name=obj.get("jobChargeName"),
-            language=obj.get("language"),
-            nfc=obj.get("nfc"),
-            main_recruiter_id=(obj.get("mainRecruiter") or {}).get("id")
-            if isinstance(obj.get("mainRecruiter"), dict)
-            else None,
-            main_recruiter_first_name=(obj.get("mainRecruiter") or {}).get("firstName")
-            if isinstance(obj.get("mainRecruiter"), dict)
-            else None,
-            main_recruiter_last_name=(obj.get("mainRecruiter") or {}).get("lastName")
-            if isinstance(obj.get("mainRecruiter"), dict)
-            else None,
-            main_recruiter_image_profile_url=(obj.get("mainRecruiter") or {}).get("imageProfileURL")
-            if isinstance(obj.get("mainRecruiter"), dict)
-            else None,
-            main_recruiter_email=(obj.get("mainRecruiter") or {}).get("email")
-            if isinstance(obj.get("mainRecruiter"), dict)
-            else None,
-            main_recruiter_work_status=(obj.get("mainRecruiter") or {}).get("workStatus")
-            if isinstance(obj.get("mainRecruiter"), dict)
-            else None,
-            main_recruiter_work_check_type_color=(obj.get("mainRecruiter") or {}).get("workCheckTypeColor")
-            if isinstance(obj.get("mainRecruiter"), dict)
-            else None,
-            main_recruiter_work_check_type_name=(obj.get("mainRecruiter") or {}).get("workCheckTypeName")
-            if isinstance(obj.get("mainRecruiter"), dict)
-            else None,
-            custom_fields=obj.get("customFields"),
+            id=str(obj.get("id") or obj.get("_id") or obj.get("uuid") or ""),
+            first_name=first_name,
+            last_name=last_name,
+            email=email,
+            status=status,
+            code=code_str,
         )
 
     @staticmethod
-    def _to_domain_time_entry(obj: Dict[str, Any]) -> TimeEntry:
+    def _to_domain_work_entry(obj: Dict[str, Any]) -> WorkEntryModel:
+        emp = obj.get("employee") or {}
+        win = obj.get("workEntryIn") or {}
+        wout = obj.get("workEntryOut") or {}
+
+        coords_in = (win.get("coordinates") or {})
+        coords_out = (wout.get("coordinates") or {})
+
+        return WorkEntryModel(
+            id=str(obj.get("id") or ""),
+            work_check_type_id=obj.get("workCheckTypeId"),
+            employee_id=emp.get("id"),
+            employee_first_name=emp.get("firstName"),
+            employee_last_name=emp.get("lastName"),
+            employee_email=emp.get("email"),
+            work_entry_type=obj.get("workEntryType"),
+            in_at=win.get("date"),
+            in_latitude=coords_in.get("latitude"),
+            in_longitude=coords_in.get("longitude"),
+            in_office_id=win.get("officeId"),
+            out_at=wout.get("date"),
+            out_latitude=coords_out.get("latitude"),
+            out_longitude=coords_out.get("longitude"),
+            out_office_id=wout.get("officeId"),
+            worked_seconds=obj.get("workedSeconds"),
+            created_at=obj.get("createdAt"),
+            updated_at=obj.get("updatedAt"),
+            deleted_at=obj.get("deletedAt"),
+        )
+
+    @staticmethod
+    def _to_domain_time_entry(obj: Dict[str, Any]) -> TimeEntryModel:
         emp = obj.get("employee") or {}
         tin = obj.get("timeEntryIn") or {}
         tout = obj.get("timeEntryOut") or {}
-        cin = tin.get("coordinates") or {}
-        cout = tout.get("coordinates") or {}
-        return TimeEntry(
+
+        coords_in = (tin.get("coordinates") or {})
+        coords_out = (tout.get("coordinates") or {})
+
+        return TimeEntryModel(
             id=str(obj.get("id") or ""),
             employee_id=emp.get("id"),
             employee_first_name=emp.get("firstName"),
@@ -425,84 +547,71 @@ class SesameRepositoryImpl(SesamePort):
             project_id=obj.get("projectId"),
             tag_ids=obj.get("tagIds"),
             in_at=tin.get("date"),
-            in_latitude=cin.get("latitude"),
-            in_longitude=cin.get("longitude"),
+            in_latitude=coords_in.get("latitude"),
+            in_longitude=coords_in.get("longitude"),
             out_at=tout.get("date"),
-            out_latitude=cout.get("latitude"),
-            out_longitude=cout.get("longitude"),
+            out_latitude=coords_out.get("latitude"),
+            out_longitude=coords_out.get("longitude"),
             comment=obj.get("comment"),
             created_at=obj.get("createdAt"),
-            updated_at=obj.get("UpdatedAt") or obj.get("updatedAt"),
+            updated_at=obj.get("UpdatedAt") if obj.get("UpdatedAt") else obj.get("updatedAt"),
             deleted_at=obj.get("deletedAt"),
-            raw=obj,
         )
 
     @staticmethod
-    def _to_domain_work_entry(obj: Dict[str, Any]) -> WorkEntry:
+    def _to_domain_hours_bag_history(obj: Dict[str, Any]) -> HoursBagHistoryModel:
+        hb = obj.get("hoursBagRule") or {}
         emp = obj.get("employee") or {}
-        win = obj.get("workEntryIn") or {}
-        wout = obj.get("workEntryOut") or {}
-        cin = win.get("coordinates") or {}
-        cout = wout.get("coordinates") or {}
-        return WorkEntry(
+        return HoursBagHistoryModel(
             id=str(obj.get("id") or ""),
-            work_check_type_id=obj.get("workCheckTypeId"),
-            work_entry_type=obj.get("workEntryType"),
+            date=obj.get("date"),
+            seconds=obj.get("seconds"),
+            hours_bag_rule_id=hb.get("id"),
+            hours_bag_rule_name=hb.get("name"),
+            hours_bag_rule_variation=hb.get("variation"),
+            employee_id=emp.get("id"),
+            employee_name=emp.get("name") or " ".join(
+                [x for x in [emp.get("firstName"), emp.get("lastName")] if x]
+            ),
+            check_seconds=obj.get("checkSeconds"),
+            check_seconds_with_variation=obj.get("checkSecondsWithVariation"),
+        )
+
+    @staticmethod
+    def _to_domain_employee_office_assignation(obj: Dict[str, Any]) -> EmployeeOfficeAssignationModel:
+        emp = obj.get("employee") or {}
+        off = obj.get("office") or {}
+        coords = (off.get("coordinates") or {})
+        return EmployeeOfficeAssignationModel(
+            id=str(obj.get("id") or ""),
             employee_id=emp.get("id"),
             employee_first_name=emp.get("firstName"),
             employee_last_name=emp.get("lastName"),
             employee_email=emp.get("email"),
-            in_origin=win.get("origin"),
-            in_at=win.get("date"),
-            in_latitude=cin.get("latitude"),
-            in_longitude=cin.get("longitude"),
-            in_office_id=win.get("officeId"),
-            out_origin=wout.get("origin"),
-            out_at=wout.get("date"),
-            out_latitude=cout.get("latitude"),
-            out_longitude=cout.get("longitude"),
-            out_office_id=wout.get("officeId"),
-            worked_seconds=obj.get("workedSeconds"),
+            office_id=off.get("id"),
+            office_name=off.get("name"),
+            office_address=off.get("address"),
+            office_latitude=coords.get("latitude"),
+            office_longitude=coords.get("longitude"),
+            office_description=off.get("description"),
+            office_radius=off.get("radio"),
+            default_timezone=off.get("defaultEmployeesDateTimeZone"),
             created_at=obj.get("createdAt"),
-            updated_at=obj.get("UpdatedAt") or obj.get("updatedAt"),
-            deleted_at=obj.get("deletedAt"),
-            raw=obj,
+            updated_at=obj.get("updatedAt"),
         )
 
     @staticmethod
-    def _to_domain_hours_bag_history(obj: Dict[str, Any]) -> HoursBagHistory:
-        rule = obj.get("hoursBagRule") or {}
-        emp = obj.get("employee") or {}
-        return HoursBagHistory(
+    def _to_domain_office(obj: Dict[str, Any]) -> OfficeModel:
+        coords = (obj.get("coordinates") or {})
+        return OfficeModel(
             id=str(obj.get("id") or ""),
-            date=obj.get("date"),
-            seconds=obj.get("seconds"),
-            check_seconds=obj.get("checkSeconds"),
-            check_seconds_with_variation=obj.get("checkSecondsWithVariation"),
-            hours_bag_rule_id=rule.get("id"),
-            hours_bag_rule_name=rule.get("name"),
-            hours_bag_rule_variation=rule.get("variation"),
-            employee_id=emp.get("id"),
-            employee_name=emp.get("name"),
-            raw=obj,
+            name=obj.get("name"),
+            address=obj.get("address"),
+            latitude=coords.get("latitude"),
+            longitude=coords.get("longitude"),
+            description=obj.get("description"),
+            radius=obj.get("radio"),
+            default_timezone=obj.get("defaultEmployeesDateTimeZone"),
+            created_at=obj.get("createdAt"),
+            updated_at=obj.get("updatedAt"),
         )
-
-    @staticmethod
-    def _to_wire_create(emp: Employee) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "firstName": emp.first_name,
-            "lastName": emp.last_name,
-        }
-        if emp.email:
-            payload["email"] = str(emp.email)
-        if emp.phone:
-            payload["phone"] = emp.phone
-        if emp.code is not None:
-            payload["code"] = emp.code
-        if emp.pin is not None:
-            payload["pin"] = emp.pin
-        if emp.date_of_birth:
-            payload["dateOfBirth"] = str(emp.date_of_birth)
-        if emp.gender:
-            payload["gender"] = emp.gender
-        return payload

@@ -2,42 +2,41 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterable, List, Optional, Dict, Any
+from typing import Dict, Iterable, List, Optional
 
 from domain.models.employee import Employee
 from domain.models.token_info import TokenInfo
 from domain.models.time_entry import TimeEntry
 from domain.models.work_entry import WorkEntry
 from domain.models.hours_bag_history import HoursBagHistory
+from domain.models.employee_office_assignation import EmployeeOfficeAssignation
 
 
 class SesamePort(ABC):
-    """Puerto (interface) para la API de Sesame."""
-
-    # --- Seguridad / compañía ---
+    # ─────────── Security / Company ───────────
     @abstractmethod
-    def get_token_info(self) -> TokenInfo:
-        ...
-    @abstractmethod
-    def get_token_info_raw(self) -> Dict[str, Any]:
-        ...
+    def get_token_info(self) -> TokenInfo: ...
 
-    # --- Empleados ---
+    @abstractmethod
+    def get_token_info_raw(self) -> Dict: ...
+
+    # ─────────── Employees ───────────
     @abstractmethod
     def list_employees(
-        self, *, only_active: Optional[bool] = None, page: int = 1, page_size: int = 100
-    ) -> List[Employee]:
-        ...
+        self,
+        *,
+        only_active: Optional[bool] = None,
+        page: int = 1,
+        page_size: int = 200,
+    ) -> List[Employee]: ...
 
     @abstractmethod
-    def create_employee(self, employee: Employee) -> Employee:
-        ...
+    def create_employee(self, employee: Employee) -> Employee: ...
 
     @abstractmethod
-    def bulk_create_employees(self, employees: Iterable[Employee]) -> List[Employee]:
-        ...
+    def bulk_create_employees(self, employees: Iterable[Employee]) -> List[Employee]: ...
 
-    # --- Time entries (GET) ---
+    # ─────────── Project: time entries ───────────
     @abstractmethod
     def list_time_entries(
         self,
@@ -47,11 +46,10 @@ class SesamePort(ABC):
         date_to: Optional[str],
         page: int = 1,
         page_size: int = 200,
-        extra_params: Optional[Dict[str, Any]] = None,
-    ) -> List[TimeEntry]:
-        ...
+        extra_params: Optional[Dict] = None,
+    ) -> List[TimeEntry]: ...
 
-    # --- Work entries (GET/POST/PUT/DELETE + clock-in/out) ---
+    # ─────────── Schedule: work entries ───────────
     @abstractmethod
     def list_work_entries(
         self,
@@ -61,43 +59,37 @@ class SesamePort(ABC):
         date_to: Optional[str],
         page: int = 1,
         page_size: int = 200,
-        extra_params: Optional[Dict[str, Any]] = None,
-    ) -> List[WorkEntry]:
-        ...
+        extra_params: Optional[Dict] = None,
+    ) -> List[WorkEntry]: ...
 
     @abstractmethod
-    def create_work_entry(self, payload: Dict[str, Any]) -> WorkEntry:
-        ...
+    def create_work_entry(self, payload: Dict) -> WorkEntry: ...
 
     @abstractmethod
-    def update_work_entry(self, work_entry_id: str, payload: Dict[str, Any]) -> WorkEntry:
-        ...
+    def update_work_entry(self, work_entry_id: str, payload: Dict) -> WorkEntry: ...
 
     @abstractmethod
-    def delete_work_entry(self, work_entry_id: str) -> bool:
-        ...
+    def delete_work_entry(self, work_entry_id: str) -> bool: ...
 
     @abstractmethod
     def clock_in(
         self,
         *,
         employee_id: str,
-        coordinates: Optional[Dict[str, float]] = None,
+        coordinates: Optional[Dict] = None,
         work_check_type_id: Optional[str] = None,
         work_break_id: Optional[str] = None,
-    ) -> WorkEntry:
-        ...
+    ) -> WorkEntry: ...
 
     @abstractmethod
     def clock_out(
         self,
         *,
         employee_id: str,
-        coordinates: Optional[Dict[str, float]] = None,
-    ) -> WorkEntry:
-        ...
+        coordinates: Optional[Dict] = None,
+    ) -> WorkEntry: ...
 
-    # --- Hours bag (bolsa de horas) ---
+    # ─────────── Hours Bag ───────────
     @abstractmethod
     def list_hours_bag_rule_history(
         self,
@@ -108,5 +100,15 @@ class SesamePort(ABC):
         hours_bag_rule_ids: Optional[List[str]] = None,
         page: int = 1,
         page_size: int = 200,
-    ) -> List[HoursBagHistory]:
-        ...
+    ) -> List[HoursBagHistory]: ...
+
+    # ─────────── Employee Office Assignations ───────────
+    @abstractmethod
+    def list_employee_office_assignations(
+        self,
+        *,
+        employee_id: Optional[str] = None,
+        office_id: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 200,
+    ) -> List[EmployeeOfficeAssignation]: ...
