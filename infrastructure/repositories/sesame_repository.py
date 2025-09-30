@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -19,6 +19,9 @@ from domain.models.employee_office_assignation import (
     EmployeeOfficeAssignation as EmployeeOfficeAssignationModel,
 )
 from domain.models.office import Office as OfficeModel
+from domain.models.worked_hours_stat import WorkedHoursStat as WorkedHoursStatModel
+from domain.models.absence_day_off import AbsenceDayOff as AbsenceDayOffModel
+from domain.models.vacation_day_off import VacationDayOff as VacationDayOffModel
 
 # Puerto (interfaz) de aplicación
 from application.interfaces.sesame_port import SesamePort
@@ -58,13 +61,6 @@ class SesameRepositoryImpl(SesamePort):
                 f"body_snippet={text_snippet!r}"
             )
         if not (200 <= resp.status_code < 300):
-            emsg = None
-            if isinstance(body, dict):
-                err = body.get("error") or {}
-                if isinstance(err, dict):
-                    emsg = err.get("message") or err.get("errors") or "Unknown error"
-                else:
-                    emsg = str(err)
             raise RuntimeError(
                 f"{msg}: HTTP {resp.status_code}. base_url={self._http.base_url} path={getattr(resp.request, 'path_url', '')} "
                 f"content-type={ctype} body_snippet={str(body)[:300]!r}"
@@ -129,7 +125,6 @@ class SesameRepositoryImpl(SesamePort):
             "limit": self._safe_limit(page_size),
         }
         if only_active:
-            # Operador "in" documentado por Sesame
             params["status[in]"] = "active"
 
         resp = self._http.get(path, params=params)
@@ -137,7 +132,6 @@ class SesameRepositoryImpl(SesamePort):
         items_raw = self._get_data_list(body)
         return [self._to_domain_employee(it) for it in items_raw if isinstance(it, dict)]
 
-    # Opcionales (no obligatorios por el ABC actual, mantenemos placeholders)
     def create_employee(self, employee: EmployeeModel) -> EmployeeModel:  # pragma: no cover
         raise NotImplementedError("create_employee no implementado en este microservicio.")
 
@@ -269,7 +263,7 @@ class SesameRepositoryImpl(SesamePort):
             if in_latitude is not None:
                 coords["latitude"] = in_latitude
             if in_longitude is not None:
-                coords["longitude"] = out_longitude if out_longitude is not None else in_longitude
+                coords["longitude"] = in_longitude  # FIX: antes tomaba out_longitude
             if coords:
                 entry_in["coordinates"] = coords
             if in_office_id:
@@ -301,7 +295,6 @@ class SesameRepositoryImpl(SesamePort):
     def delete_work_entry(self, *, work_entry_id: str) -> None:
         path = self._ep["work_entries_delete"].replace("{id}", work_entry_id)
         resp = self._http.delete(path)
-        # Si no 2xx lanza error dentro de _parse_json_or_raise
         self._parse_json_or_raise(resp, "delete_work_entry")
 
     # Clock in/out
@@ -424,11 +417,9 @@ class SesameRepositoryImpl(SesamePort):
         if date_to:
             params["to"] = date_to
 
-        # En Swagger aceptan repetir employeeIds=... varias veces; requests lo hace si pasamos list
         if employee_ids:
             params["employeeIds"] = list(employee_ids)
 
-        # hoursBagRuleIds es opcional; si no se conoce, mejor no enviarlo
         if hours_bag_rule_ids:
             params["hoursBagRuleIds"] = list(hours_bag_rule_ids)
 
@@ -476,6 +467,50 @@ class SesameRepositoryImpl(SesamePort):
         body = self._parse_json_or_raise(resp, "list_offices")
         items_raw = self._get_data_list(body)
         return [self._to_domain_office(it) for it in items_raw if isinstance(it, dict)]
+
+    # ─────────────────────────────────────────────────────────────
+    # NEW: Worked Hours Report
+    # ─────────────────────────────────────────────────────────────
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=0.5, max=2),
+        reraise=True,
+        retry=retry_if_exception_type((requests.RequestException, RuntimeError)),
+    )
+    def list_worked_hours_report(
+        self,
+        *,
+        employee_ids: Optional[List[str]],
+        date_from: str,
+        date_to: str,
+        with_checks: Optional[bool] = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> Tuple[List[WorkedHoursStatModel], Dict]:
+        """
+        GET /schedule/v1/reports/worked-hours
+        """
+        path = self._ep["worked_hours_report_list"]
+        params: Dict[str, Any] = {
+            "from": date_from,
+            "to": date_to,
+            "limit": self._safe_limit(page_size),
+            "page": page,
+        }
+
+        if employee_ids:
+            params["employeeIds[in]"] = [eid for eid in employee_ids if eid]
+
+        if with_checks is not None:
+            params["withChecks"] = "true" if with_checks else "false"
+
+        resp = self._http.get(path, params=params)
+        body = self._parse_json_or_raise(resp, "list_worked_hours_report")
+
+        items_raw = self._get_data_list(body)
+        meta = body.get("meta") or {}
+        items = [self._to_domain_worked_hours_stat(it) for it in items_raw if isinstance(it, dict)]
+        return items, meta
 
     # ─────────────────────────────────────────────────────────────
     # Mapeos
@@ -595,7 +630,7 @@ class SesameRepositoryImpl(SesamePort):
             office_longitude=coords.get("longitude"),
             office_description=off.get("description"),
             office_radius=off.get("radio"),
-            default_timezone=off.get("defaultEmployeesDateTimeZone"),
+            office_default_timezone=off.get("defaultEmployeesDateTimeZone"),  # FIX nombre de campo correcto
             created_at=obj.get("createdAt"),
             updated_at=obj.get("updatedAt"),
         )
@@ -614,4 +649,175 @@ class SesameRepositoryImpl(SesamePort):
             default_timezone=obj.get("defaultEmployeesDateTimeZone"),
             created_at=obj.get("createdAt"),
             updated_at=obj.get("updatedAt"),
+        )
+
+    @staticmethod
+    def _to_domain_worked_hours_stat(obj: Dict[str, Any]) -> WorkedHoursStatModel:
+        return WorkedHoursStatModel(
+            employee_id=str(obj.get("employeeId") or ""),
+            seconds_worked=int(obj.get("secondsWorked") or 0),
+            seconds_to_work=(int(obj.get("secondsToWork")) if obj.get("secondsToWork") is not None else None),
+            seconds_balance=(int(obj.get("secondsBalance")) if obj.get("secondsBalance") is not None else None),
+            checks=obj.get("checks"),
+        )
+
+    # ─────────────────────────────────────────────────────────────
+    # NEW: Day Offs (Ausencias y Vacaciones)
+    # ─────────────────────────────────────────────────────────────
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=0.5, max=2),
+        reraise=True,
+        retry=retry_if_exception_type((requests.RequestException, RuntimeError)),
+    )
+    def list_absence_day_off(
+            self,
+            *,
+            employee_ids: Optional[List[str]],
+            date_from: str,
+            date_to: str,
+            order_by: Optional[str] = None,
+            page: int = 1,
+            page_size: int = 100,
+    ) -> Tuple[List[AbsenceDayOffModel], Dict]:
+        path = self._ep["absence_day_off_list"]
+        params: Dict[str, Any] = {
+            "from": date_from,
+            "to": date_to,
+            "limit": self._safe_limit(page_size),
+            "page": page,
+        }
+        if employee_ids:
+            params["employeeIds"] = [eid for eid in employee_ids if eid]
+        if order_by:
+            params["orderBy"] = order_by
+
+        resp = self._http.get(path, params=params)
+        body = self._parse_json_or_raise(resp, "list_absence_day_off")
+        items_raw = self._get_data_list(body)
+        meta = body.get("meta") or {}
+        items = [self._to_domain_absence_day_off(it) for it in items_raw if isinstance(it, dict)]
+        return items, meta
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=0.5, max=2),
+        reraise=True,
+        retry=retry_if_exception_type((requests.RequestException, RuntimeError)),
+    )
+    def list_vacation_day_off(
+            self,
+            *,
+            employee_ids: Optional[List[str]],
+            date_from: str,
+            date_to: str,
+            order_by: Optional[str] = None,
+            page: int = 1,
+            page_size: int = 100,
+    ) -> Tuple[List[VacationDayOffModel], Dict]:
+        path = self._ep["vacation_day_off_list"]
+        params: Dict[str, Any] = {
+            "from": date_from,
+            "to": date_to,
+            "limit": self._safe_limit(page_size),
+            "page": page,
+        }
+        if employee_ids:
+            params["employeeIds"] = [eid for eid in employee_ids if eid]
+        if order_by:
+            params["orderBy"] = order_by
+
+        resp = self._http.get(path, params=params)
+        body = self._parse_json_or_raise(resp, "list_vacation_day_off")
+        items_raw = self._get_data_list(body)
+        meta = body.get("meta") or {}
+        items = [self._to_domain_vacation_day_off(it) for it in items_raw if isinstance(it, dict)]
+        return items, meta
+
+    # ─────────────────────────────────────────────────────────────
+    # Mapeos
+    # ─────────────────────────────────────────────────────────────
+    @staticmethod
+    def _to_domain_employee(obj: Dict[str, Any]) -> EmployeeModel:
+        first_name = obj.get("firstName") or ""
+        last_name = obj.get("lastName") or ""
+        email = obj.get("email") or obj.get("personalMail") or None
+        status = obj.get("status") or None
+        code = obj.get("code")
+        code_str = str(code) if code is not None else None
+        return EmployeeModel(
+            id=str(obj.get("id") or obj.get("_id") or obj.get("uuid") or ""),
+            first_name=first_name,
+            last_name=last_name,
+            email=email,
+            status=status,
+            code=code_str,
+        )
+
+    @staticmethod
+    def _to_domain_worked_hours_stat(obj: Dict[str, Any]) -> WorkedHoursStatModel:
+        return WorkedHoursStatModel(
+            employee_id=str(obj.get("employeeId") or ""),
+            seconds_worked=int(obj.get("secondsWorked") or 0),
+            seconds_to_work=(int(obj.get("secondsToWork")) if obj.get("secondsToWork") is not None else None),
+            seconds_balance=(int(obj.get("secondsBalance")) if obj.get("secondsBalance") is not None else None),
+        )
+
+    # Absences
+    @staticmethod
+    def _to_domain_absence_day_off(obj: Dict[str, Any]) -> AbsenceDayOffModel:
+        emp = obj.get("employee") or {}
+        cal = obj.get("calendar") or {}
+        at = cal.get("absenceType") or {}
+        return AbsenceDayOffModel(
+            id=str(obj.get("id") or ""),
+            date=obj.get("date"),
+            seconds=obj.get("seconds"),
+            calendar_id=cal.get("id"),
+            calendar_year=cal.get("year"),
+            calendar_max_days_off=cal.get("maxDaysOff"),
+            calendar_created_at=cal.get("createdAt"),
+            calendar_updated_at=cal.get("updatedAt"),
+            absence_type_id=(at.get("id") if isinstance(at, dict) else None),
+            absence_type_name=(at.get("name") if isinstance(at, dict) else None),
+            absence_type_needs_validation=(at.get("needsValidation") if isinstance(at, dict) else None),
+            absence_type_created_at=(at.get("createdAt") if isinstance(at, dict) else None),
+            absence_type_updated_at=(at.get("updatedAt") if isinstance(at, dict) else None),
+            absence_type_created_by=(at.get("createdBy") if isinstance(at, dict) else None),
+            employee_id=emp.get("id"),
+            employee_first_name=emp.get("firstName"),
+            employee_last_name=emp.get("lastName"),
+            employee_email=emp.get("email"),
+            raw=obj,
+        )
+
+    # Vacations
+    @staticmethod
+    def _to_domain_vacation_day_off(obj: Dict[str, Any]) -> VacationDayOffModel:
+        emp = obj.get("employee") or {}
+        cal = obj.get("calendar") or {}
+        vc = cal.get("vacationConfiguration") or {}
+        return VacationDayOffModel(
+            id=str(obj.get("id") or ""),
+            date=obj.get("date"),
+            seconds=obj.get("seconds"),
+            calendar_id=cal.get("id"),
+            calendar_year=cal.get("year"),
+            calendar_max_days_off=cal.get("maxDaysOff"),
+            calendar_created_at=cal.get("createdAt"),
+            calendar_updated_at=cal.get("updatedAt"),
+            vacation_config_id=(vc.get("id") if isinstance(vc, dict) else None),
+            vacation_config_name=(vc.get("name") if isinstance(vc, dict) else None),
+            vacation_config_employee_request_enabled=(
+                vc.get("employeeRequestEnabled") if isinstance(vc, dict) else None),
+            vacation_config_needs_validation=(vc.get("needsValidation") if isinstance(vc, dict) else None),
+            vacation_config_day_type=(vc.get("dayType") if isinstance(vc, dict) else None),
+            vacation_config_max_days_off=(vc.get("maxDaysOff") if isinstance(vc, dict) else None),
+            vacation_config_is_default=(vc.get("isDefault") if isinstance(vc, dict) else None),
+            employee_id=emp.get("id"),
+            employee_first_name=emp.get("firstName"),
+            employee_last_name=emp.get("lastName"),
+            employee_email=emp.get("email"),
+            raw=obj,
         )

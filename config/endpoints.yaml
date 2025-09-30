@@ -19,5 +19,12 @@ hours_bag_rule_history_list: "/schedule/v1/hours-bag-rule-history"
 # Employee–Office assignations
 employee_office_assignations_list: "/core/v3/employee-office-assignations"
 
-# NEW: Offices
+# Offices
 offices_list: "/core/v3/offices"
+
+# Worked hours report (estadísticas por empleado)
+worked_hours_report_list: "/schedule/v1/reports/worked-hours"
+
+# NEW: Day Offs
+absence_day_off_list: "/schedule/v1/absence-day-off"
+vacation_day_off_list: "/schedule/v1/vacation-day-off"

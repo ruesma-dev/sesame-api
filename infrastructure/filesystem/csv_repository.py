@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -11,6 +10,9 @@ from domain.models.work_entry import WorkEntry
 from domain.models.time_entry import TimeEntry
 from domain.models.office import Office
 from domain.models.employee_office_assignation import EmployeeOfficeAssignation
+from domain.models.worked_hours_stat import WorkedHoursStat
+from domain.models.absence_day_off import AbsenceDayOff
+from domain.models.vacation_day_off import VacationDayOff
 
 
 class CsvRepository:
@@ -107,8 +109,7 @@ class CsvRepository:
                         a.office_longitude or "",
                         a.office_description or "",
                         a.office_radius or "",
-                        # FIX: el campo correcto en el modelo es office_default_timezone
-                        a.office_default_timezone or "",
+                        a.office_default_timezone or "",  # usa el campo correcto del modelo
                         a.created_at or "",
                         a.updated_at or "",
                     ]
@@ -238,6 +239,7 @@ class CsvRepository:
         path = self._out / "hours_by_office.csv"
         with path.open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=["office_id", "total_seconds", "total_hours"])
+        #   ↑ (se mantiene igual)
             w.writeheader()
             for r in rows:
                 w.writerow(r)
@@ -312,4 +314,187 @@ class CsvRepository:
             w.writeheader()
             for r in rows:
                 w.writerow(r)
+        return str(path)
+
+    # ─────────────────────────────────────────────────────────────
+    # NEW: Worked Hours Stats
+    # ─────────────────────────────────────────────────────────────
+    def save_worked_hours_stats(
+        self,
+        stats: Sequence[WorkedHoursStat],
+        *,
+        year: int,
+        month: int,
+        filename: str = "worked_hours_stats.csv",
+    ) -> str:
+        """
+        Exporta:
+          employee_id, seconds_worked, seconds_to_work, seconds_balance, hours_worked, hours_to_work, hours_balance
+        """
+        path = self._out / filename
+        with path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(
+                [
+                    "employee_id",
+                    "seconds_worked",
+                    "seconds_to_work",
+                    "seconds_balance",
+                    "hours_worked",
+                    "hours_to_work",
+                    "hours_balance",
+                ]
+            )
+            for s in stats:
+                sw = int(s.seconds_worked or 0)
+                stw = int(s.seconds_to_work or 0)
+                sba = int(s.seconds_balance) if s.seconds_balance is not None else (sw - stw)
+                w.writerow(
+                    [
+                        s.employee_id,
+                        sw,
+                        s.seconds_to_work if s.seconds_to_work is not None else "",
+                        s.seconds_balance if s.seconds_balance is not None else "",
+                        round(sw / 3600.0, 2),
+                        (round(stw / 3600.0, 2) if s.seconds_to_work is not None else ""),
+                        (round(sba / 3600.0, 2) if s.seconds_balance is not None else ""),
+                    ]
+                )
+        return str(path)
+
+    # ─────────────────────────────────────────────────────────────
+    # NEW: Worked Hours Stats (ya lo tenías)
+    # ─────────────────────────────────────────────────────────────
+    def save_worked_hours_stats(
+            self,
+            stats: Sequence[WorkedHoursStat],
+            *,
+            year: int,
+            month: int,
+            filename: str = "worked_hours_stats.csv",
+    ) -> str:
+        path = self._out / filename
+        with path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(
+                [
+                    "employee_id",
+                    "seconds_worked",
+                    "seconds_to_work",
+                    "seconds_balance",
+                    "hours_worked",
+                    "hours_to_work",
+                    "hours_balance",
+                ]
+            )
+            for s in stats:
+                sw = int(s.seconds_worked or 0)
+                stw = int(s.seconds_to_work or 0)
+                sba = int(s.seconds_balance if s.seconds_balance is not None else (sw - stw))
+                w.writerow(
+                    [
+                        s.employee_id,
+                        sw,
+                        s.seconds_to_work if s.seconds_to_work is not None else "",
+                        s.seconds_balance if s.seconds_balance is not None else "",
+                        round(sw / 3600.0, 2),
+                        (round(stw / 3600.0, 2) if s.seconds_to_work is not None else ""),
+                        (round(sba / 3600.0, 2) if s.seconds_balance is not None else ""),
+                    ]
+                )
+        return str(path)
+
+    # ─────────────────────────────────────────────────────────────
+    # NEW: Absence Day Off
+    # ─────────────────────────────────────────────────────────────
+    def save_absence_day_off(self, items: Sequence[AbsenceDayOff], *, filename: str = "absence_day_off.csv") -> str:
+        path = self._out / filename
+        with path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(
+                [
+                    "id",
+                    "date",
+                    "seconds",
+                    "employee_id",
+                    "employee_name",
+                    "employee_email",
+                    "calendar_id",
+                    "calendar_year",
+                    "calendar_max_days_off",
+                    "absence_type_id",
+                    "absence_type_name",
+                    "absence_type_needs_validation",
+                ]
+            )
+            for it in items:
+                w.writerow(
+                    [
+                        it.id,
+                        it.date,
+                        it.seconds or 0,
+                        it.employee_id or "",
+                        " ".join([x for x in [it.employee_first_name, it.employee_last_name] if x]) or "",
+                        it.employee_email or "",
+                        it.calendar_id or "",
+                        it.calendar_year or "",
+                        it.calendar_max_days_off or "",
+                        it.absence_type_id or "",
+                        it.absence_type_name or "",
+                        it.absence_type_needs_validation if it.absence_type_needs_validation is not None else "",
+                    ]
+                )
+        return str(path)
+
+    # ─────────────────────────────────────────────────────────────
+    # NEW: Vacation Day Off
+    # ─────────────────────────────────────────────────────────────
+    def save_vacation_day_off(self, items: Sequence[VacationDayOff], *,
+                              filename: str = "vacation_day_off.csv") -> str:
+        path = self._out / filename
+        with path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(
+                [
+                    "id",
+                    "date",
+                    "seconds",
+                    "employee_id",
+                    "employee_name",
+                    "employee_email",
+                    "calendar_id",
+                    "calendar_year",
+                    "calendar_max_days_off",
+                    "vacation_config_id",
+                    "vacation_config_name",
+                    "vacation_config_day_type",
+                    "vacation_config_is_default",
+                    "vacation_config_needs_validation",
+                    "vacation_config_employee_request_enabled",
+                ]
+            )
+            for it in items:
+                w.writerow(
+                    [
+                        it.id,
+                        it.date,
+                        it.seconds or 0,
+                        it.employee_id or "",
+                        " ".join([x for x in [it.employee_first_name, it.employee_last_name] if x]) or "",
+                        it.employee_email or "",
+                        it.calendar_id or "",
+                        it.calendar_year or "",
+                        it.calendar_max_days_off or "",
+                        it.vacation_config_id or "",
+                        it.vacation_config_name or "",
+                        it.vacation_config_day_type or "",
+                        it.vacation_config_is_default if it.vacation_config_is_default is not None else "",
+                        it.vacation_config_needs_validation if it.vacation_config_needs_validation is not None else "",
+                        (
+                            it.vacation_config_employee_request_enabled
+                            if it.vacation_config_employee_request_enabled is not None
+                            else ""
+                        ),
+                    ]
+                )
         return str(path)

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from domain.models.employee import Employee
 from domain.models.token_info import TokenInfo
@@ -10,6 +10,9 @@ from domain.models.time_entry import TimeEntry
 from domain.models.work_entry import WorkEntry
 from domain.models.hours_bag_history import HoursBagHistory
 from domain.models.employee_office_assignation import EmployeeOfficeAssignation
+from domain.models.worked_hours_stat import WorkedHoursStat
+from domain.models.absence_day_off import AbsenceDayOff
+from domain.models.vacation_day_off import VacationDayOff
 
 
 class SesamePort(ABC):
@@ -112,3 +115,41 @@ class SesamePort(ABC):
         page: int = 1,
         page_size: int = 200,
     ) -> List[EmployeeOfficeAssignation]: ...
+
+    # ─────────── Worked Hours Report ───────────
+    @abstractmethod
+    def list_worked_hours_report(
+        self,
+        *,
+        employee_ids: Optional[List[str]],
+        date_from: str,
+        date_to: str,
+        with_checks: Optional[bool] = None,
+        page: int = 1,
+        page_size: int = 200,
+    ) -> Tuple[List[WorkedHoursStat], Dict]: ...
+
+    # ─────────── NEW: Day Offs ───────────
+    @abstractmethod
+    def list_absence_day_off(
+        self,
+        *,
+        employee_ids: Optional[List[str]],
+        date_from: str,
+        date_to: str,
+        order_by: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 200,
+    ) -> Tuple[List[AbsenceDayOff], Dict]: ...
+
+    @abstractmethod
+    def list_vacation_day_off(
+        self,
+        *,
+        employee_ids: Optional[List[str]],
+        date_from: str,
+        date_to: str,
+        order_by: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 200,
+    ) -> Tuple[List[VacationDayOff], Dict]: ...

@@ -61,6 +61,13 @@ if __name__ == "__main__":
     DO_HOURS_BAG_MONTH = False                     # opcional, puede salir vacío según config actual
     DO_SINGLE_EMPLOYEE_WORK_ENTRIES = False        # por si quieres mantener pruebas con un empleado
 
+    # NUEVO: Exportar estadísticas worked-hours por RANGO (17→29 sep-2025, inclusivo)
+    DO_EXPORT_WORKED_HOURS_RANGE = True
+    WITH_CHECKS = True  # ponlo a False si no necesitas los "checks" en la respuesta
+
+    # NUEVO (mínima modificación): Exportar ausencias y vacaciones por el mismo rango
+    DO_EXPORT_DAY_OFFS_RANGE = True
+
     # ==== Arranque ====
     settings = Settings.from_env()
     log.info(
@@ -85,7 +92,6 @@ if __name__ == "__main__":
         controller.run_export_offices()
 
     # 4) NUEVO: Exportar asignaciones empleado–oficina (CSV fijo: employee_office_assignations.csv)
-    #    Llama al endpoint /core/v3/employee-office-assignations para TODOS los empleados
     if DO_EXPORT_EMPLOYEE_OFFICE_ASSIGNATIONS:
         controller.run_export_employee_office_assignations_all()
 
@@ -93,17 +99,29 @@ if __name__ == "__main__":
     if DO_EXPORT_WORK_ENTRIES_ALL_MONTH:
         controller.run_export_work_entries_all_month(year=YEAR, month=MONTH)
 
-    # 6) Agregados a partir de Work Entries (CSV fijos):
-    #    - coordinates.csv
-    #    - hours_by_employee.csv
-    #    - hours_by_office.csv
+    # 6) Agregados a partir de Work Entries (CSV fijos)
     if DO_AGGREGATES_FROM_WORK_ENTRIES:
         controller.run_company_hours_report_month(year=YEAR, month=MONTH)
 
-    # 7) (Opcional) Bolsa de horas del mes (CSV fijos: hours_bag_history.csv y hours_bag_totals_by_employee.csv)
+    # 7) (Opcional) Bolsa de horas del mes (CSV fijos)
     if DO_HOURS_BAG_MONTH:
         controller.run_hours_bag_month(year=YEAR, month=MONTH, employee_ids=None)
 
-    # 8) (Opcional) Prueba de un único empleado (por si la quieres mantener)
+    # 8) (Opcional) Prueba de un único empleado
     if DO_SINGLE_EMPLOYEE_WORK_ENTRIES:
         controller.run_get_work_entries_month(employee_id=EMPLOYEE_ID, year=YEAR, month=MONTH)
+
+    # 9) Worked Hours (TODOS los empleados) para el rango 17–29/09/2025 inclusivo
+    if DO_EXPORT_WORKED_HOURS_RANGE:
+        controller.run_export_worked_hours_stats_range(
+            date_from="2025-09-17",
+            date_to="2025-09-29",
+            with_checks=WITH_CHECKS,
+        )
+
+    # 10) NUEVO (mínima modificación): Ausencias y Vacaciones (empleado a empleado) mismo rango
+    if DO_EXPORT_DAY_OFFS_RANGE:
+        controller.run_export_day_offs_range(
+            date_from="2025-09-17",
+            date_to="2025-09-29",
+        )

@@ -4,12 +4,14 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from application.use_cases.employee_use_cases import EmployeeUseCases
+from application.use_cases.day_off_use_cases import DayOffUseCases
 from application.use_cases.security_use_cases import SecurityUseCases
+from application.use_cases.worked_hours_use_cases import WorkedHoursUseCases
 from domain.models.employee import Employee
 from domain.models.work_entry import WorkEntry
 from domain.models.time_entry import TimeEntry
@@ -32,6 +34,9 @@ class CLIController:
         self._csv = csv_repo
         self._sec = sec_uc
         self._emp = emp_uc
+        # NEW: orquestador de worked-hours
+        self._wh = WorkedHoursUseCases(repo)
+        self._dayoffs = DayOffUseCases(repo)
         self._log = logging.getLogger(self.__class__.__name__)
 
     # ─────────────────────────────────────────────────────────────
@@ -113,7 +118,7 @@ class CLIController:
         self._log.info("CSV offices: %s", path)
 
     # ─────────────────────────────────────────────────────────────
-    # 4) NUEVO: Export employee–office assignations (todos)
+    # 4) Export employee–office assignations (todos)
     # ─────────────────────────────────────────────────────────────
     def run_export_employee_office_assignations_all(self) -> None:
         self._log.info("GET Employee–Office assignations (todos los empleados)")
@@ -193,8 +198,6 @@ class CLIController:
     # 6) Agregados: coordinates / hours_by_employee / hours_by_office
     # ─────────────────────────────────────────────────────────────
     def run_company_hours_report_month(self, *, year: int, month: int) -> None:
-        # Cargamos work entries del CSV ya generado o hacemos llamada directa.
-        # Para garantizar consistencia, volvemos a consultar (podrías leer CSV si prefieres).
         date_from = date(year, month, 1).isoformat()
         if month == 12:
             date_to = date(year + 1, 1, 1).isoformat()
@@ -278,7 +281,7 @@ class CLIController:
         path_emp = self._csv.save_hours_by_employee(hours_by_emp_rows, year=year, month=month)
         self._log.info("CSV horas por empleado: %s", path_emp)
 
-        # Hours by office (sumar in_office_id / out_office_id si aplica; aquí sumamos por in_office_id)
+        # Hours by office
         sec_by_off: Dict[str, int] = {}
         for we in all_entries:
             oid = we.in_office_id or "UNKNOWN"
@@ -333,3 +336,45 @@ class CLIController:
             )
         path = self._csv.save_work_entries(entries, year=year, month=month, filename_prefix="work_entries")
         self._log.info("CSV (mes %d/%d): %s", month, year, path)
+
+    # ─────────────────────────────────────────────────────────────
+    # NEW: Export Worked Hours Stats (todos los empleados) RANGO
+    # ─────────────────────────────────────────────────────────────
+    def run_export_worked_hours_stats_range(self, *, date_from: str, date_to: str, with_checks: bool = False) -> None:
+        """
+        Exporta worked-hours para todos los empleados entre date_from y date_to (ambos inclusive).
+        Hace bulk (employeeIds[in]) con paginación de empleados y del propio reporte.
+        """
+        self._log.info(
+            "GET Worked Hours Report (bulk employeeIds[in]) %s → %s with_checks=%s",
+            date_from,
+            date_to,
+            with_checks,
+        )
+        stats = self._wh.list_worked_hours_all_employees_range(
+            date_from=date_from, date_to=date_to, with_checks=with_checks
+        )
+        # usamos el mes de 'from' solo como metadata interna
+        y, m, *_ = date_from.split("-")
+        path = self._csv.save_worked_hours_stats(stats, year=int(y), month=int(m))
+        self._log.info("CSV worked_hours_stats: %s", path)
+
+    def run_export_day_offs_range(self, *, date_from: str, date_to: str) -> None:
+        """
+        Extrae AUSENCIAS y VACACIONES para todos los empleados activos en el rango inclusivo [date_from, date_to],
+        realizando la consulta empleado a empleado, paginada.
+        """
+        self._log.info(
+            "GET Absence & Vacation Day Off (per-employee) %s → %s",
+            date_from,
+            date_to,
+        )
+
+        absences = self._dayoffs.list_absences_all_employees_range(date_from=date_from, date_to=date_to)
+        vacations = self._dayoffs.list_vacations_all_employees_range(date_from=date_from, date_to=date_to)
+
+        p1 = self._csv.save_absence_day_off(absences)
+        p2 = self._csv.save_vacation_day_off(vacations)
+
+        self._log.info("CSV absence_day_off:  %s", p1)
+        self._log.info("CSV vacation_day_off: %s", p2)
