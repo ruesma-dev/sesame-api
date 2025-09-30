@@ -740,19 +740,84 @@ class SesameRepositoryImpl(SesamePort):
     # ─────────────────────────────────────────────────────────────
     @staticmethod
     def _to_domain_employee(obj: Dict[str, Any]) -> EmployeeModel:
-        first_name = obj.get("firstName") or ""
-        last_name = obj.get("lastName") or ""
-        email = obj.get("email") or obj.get("personalMail") or None
-        status = obj.get("status") or None
-        code = obj.get("code")
-        code_str = str(code) if code is not None else None
+        """
+        Mapeo completo a EmployeeModel, aplanando 'company' y 'mainRecruiter'.
+        """
+        company = obj.get("company") or {}
+        recruiter = obj.get("mainRecruiter") or {}
+
+        # Pydantic convertirá strings ISO a datetime/date donde aplique.
         return EmployeeModel(
             id=str(obj.get("id") or obj.get("_id") or obj.get("uuid") or ""),
-            first_name=first_name,
-            last_name=last_name,
-            email=email,
-            status=status,
-            code=code_str,
+            first_name=obj.get("firstName"),
+            last_name=obj.get("lastName"),
+
+            email=obj.get("email"),
+            personal_mail=obj.get("personalMail"),
+
+            status=obj.get("status"),
+            work_status=obj.get("workStatus"),
+            image_profile_url=obj.get("imageProfileURL"),
+            code=obj.get("code"),
+            pin=obj.get("pin"),
+            phone=obj.get("phone"),
+            work_phone=obj.get("workPhone"),
+
+            company_id=company.get("id"),
+            company_name=company.get("name"),
+            company_notification_email=company.get("notificationEmail"),
+            company_language=company.get("language"),
+            company_created_at=company.get("createdAt"),
+            company_updated_at=company.get("updatedAt"),
+
+            gender=obj.get("gender"),
+            contract_id=obj.get("contractId"),
+            nid=obj.get("nid"),
+            identity_number_type=obj.get("identityNumberType"),
+            ssn=obj.get("ssn"),
+            price_per_hour=obj.get("pricePerHour"),
+            account_number=obj.get("accountNumber"),
+
+            date_of_birth=obj.get("dateOfBirth"),
+            created_at=obj.get("createdAt"),
+            updated_at=obj.get("updatedAt"),
+
+            children=obj.get("children"),
+            disability=obj.get("disability"),
+            address=obj.get("address"),
+            postal_code=obj.get("postalCode"),
+            city=obj.get("city"),
+            province=obj.get("province"),
+            country=obj.get("country"),
+            nationality=obj.get("nationality"),
+            nationalities=obj.get("nationalities"),
+
+            marital_status=obj.get("maritalStatus"),
+            emergency_phone=obj.get("emergencyPhone"),
+            description=obj.get("description"),
+            salary_range=obj.get("salaryRange"),
+            study_level=obj.get("studyLevel"),
+            professional_category_code=obj.get("professionalCategoryCode"),
+            professional_category_description=obj.get("professionalCategoryDescription"),
+            bic=obj.get("bic"),
+            job_charge_id=obj.get("jobChargeId"),
+            job_charge_name=obj.get("jobChargeName"),
+            language=obj.get("language"),
+            nfc=obj.get("nfc"),
+
+            main_recruiter_id=(recruiter.get("id") if isinstance(recruiter, dict) else None),
+            main_recruiter_first_name=(recruiter.get("firstName") if isinstance(recruiter, dict) else None),
+            main_recruiter_last_name=(recruiter.get("lastName") if isinstance(recruiter, dict) else None),
+            main_recruiter_image_profile_url=(
+                recruiter.get("imageProfileURL") if isinstance(recruiter, dict) else None),
+            main_recruiter_email=(recruiter.get("email") if isinstance(recruiter, dict) else None),
+            main_recruiter_work_status=(recruiter.get("workStatus") if isinstance(recruiter, dict) else None),
+            main_recruiter_work_check_type_color=(
+                recruiter.get("workCheckTypeColor") if isinstance(recruiter, dict) else None),
+            main_recruiter_work_check_type_name=(
+                recruiter.get("workCheckTypeName") if isinstance(recruiter, dict) else None),
+
+            custom_fields=obj.get("customFields"),
         )
 
     @staticmethod

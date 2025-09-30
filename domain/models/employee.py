@@ -8,26 +8,28 @@ from pydantic import BaseModel, Field, EmailStr
 
 
 class Employee(BaseModel):
-    """Modelo de dominio alineado con Core-v3-Employee (/core/v3/employees),
-    con validación laxa en enums para tolerar valores no documentados.
+    """
+    Modelo de dominio alineado con Core-v3-Employee (/core/v3/employees),
+    con validación laxa para tolerar valores no documentados.
     """
     id: Optional[str] = Field(default=None)
-    first_name: str
-    last_name: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
 
     # Emails
     email: Optional[EmailStr] = None          # campo principal en v3
     personal_mail: Optional[EmailStr] = None  # personalMail
 
     # Estado y datos básicos
-    work_status: Optional[str] = None         # online/offline/paused/remote/otros
+    status: Optional[str] = None                  # active/inactive/otros
+    work_status: Optional[str] = None             # online/offline/paused/remote/otros
     image_profile_url: Optional[str] = None
     code: Optional[int] = None
     pin: Optional[int] = None
     phone: Optional[str] = None
     work_phone: Optional[str] = None
 
-    # Compañía (datos principales)
+    # Compañía (datos principales, aplanados)
     company_id: Optional[str] = None
     company_name: Optional[str] = None
     company_notification_email: Optional[EmailStr] = None
@@ -48,9 +50,6 @@ class Employee(BaseModel):
     date_of_birth: Optional[date] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-
-    # Estado de alta
-    status: Optional[str] = None                  # active/inactive/otros
 
     # Datos personales ampliados
     children: Optional[int] = None
@@ -89,3 +88,5 @@ class Employee(BaseModel):
 
     # Custom fields
     custom_fields: Optional[List[Dict[str, Any]]] = None
+
+    model_config = {"extra": "allow"}
