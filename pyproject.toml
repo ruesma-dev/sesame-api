@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sesame-api"                       # nombre del paquete en pip
+version = "0.1.0"                         # OBLIGATORIO y SIEMPRE como string
+description = "Conector Sesame (SDK interna JSON-in/JSON-out)."
+requires-python = ">=3.12"
+authors = [
+  { name = "Pablo", email = "pablo@example.com" }
+]
+
+dependencies = [
+  "requests>=2.31.0",
+  "tenacity>=8.2.0",
+  "pydantic>=2,<3",
+  "python-dotenv>=1.0.0",
+  "PyYAML>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+  "application",
+  "application.*",
+  "config",
+  "config.*",
+  "domain",
+  "domain.*",
+  "infrastructure",
+  "infrastructure.*",
+  "interface_adapters",
+  "interface_adapters.*",
+  "sesame_connector",
+  "sesame_connector.*",
+]
