@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sesame-api"                       # nombre del paquete en pip
-version = "0.1.0"                         # OBLIGATORIO y SIEMPRE como string
+version = "0.1.0"
 description = "Conector Sesame (SDK interna JSON-in/JSON-out)."
 requires-python = ">=3.12"
 authors = [
@@ -15,6 +15,7 @@ dependencies = [
   "requests>=2.31.0",
   "tenacity>=8.2.0",
   "pydantic>=2,<3",
+  "pydantic[email]>=2,<3",
   "python-dotenv>=1.0.0",
   "PyYAML>=6.0",
 ]

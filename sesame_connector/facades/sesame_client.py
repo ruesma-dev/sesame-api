@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, List, Optional
+from pathlib import Path
+from datetime import date, datetime
+
 
 from application.interfaces.sesame_port import SesamePort
 from application.use_cases.employee_use_cases import EmployeeUseCases
@@ -36,13 +39,26 @@ class SesameClient:
     # Factoría: construir desde .env (para usar desde cualquier app)
     # ------------------------------------------------------------------
     @classmethod
-    def from_env(cls, endpoints_path: str = "config/endpoints.yaml") -> "SesameClient":
+    def from_env(cls, endpoints_path: str | None = None) -> "SesameClient":
         """
         Crea una instancia lista para usar leyendo credenciales del entorno
         y endpoints del YAML.
+
+        Si endpoints_path es None, usa el endpoints.yaml que viene dentro del
+        propio proyecto/librería (carpeta config en la raíz del repo/paquete).
         """
         settings = Settings.from_env()
-        endpoints = load_endpoints(endpoints_path)
+
+        if endpoints_path is None:
+            # Ruta al archivo actual: .../sesame_connector/facades/sesame_client.py
+            here = Path(__file__).resolve()
+            # Raíz del proyecto/librería: subimos dos niveles
+            project_root = here.parents[2]
+            ep_path = project_root / "config" / "endpoints.yaml"
+        else:
+            ep_path = Path(endpoints_path)
+
+        endpoints = load_endpoints(str(ep_path))
         http = HttpClient.from_settings(settings)
         repo = SesameRepositoryImpl(settings, http, endpoints=endpoints)
         return cls(repo)
@@ -144,6 +160,9 @@ class SesameClient:
         # Worked hours report
         if action == "worked_hours.range_all_employees":
             return self._action_worked_hours_range_all_employees(payload)
+
+        if action == "work_entries.status_today_all_employees":
+            return self._action_work_entries_status_today_all_employees(payload)
 
         raise ValueError(f"Acción no soportada: {action!r}")
 
@@ -591,3 +610,151 @@ class SesameClient:
                 "with_checks": with_checks,
             },
         }
+
+    def _action_work_entries_status_today_all_employees(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Devuelve, para una fecha (por defecto hoy), los empleados activos
+        que tienen fichajes abiertos/cerrados.
+
+        Estructura de salida:
+        {
+          "data": {
+            "open": [
+              {
+                "employee_id": "...",
+                "employee_name": "...",
+                "email": "...",
+                "last_in_at": "...",
+                "last_in_office_id": "..."
+              },
+              ...
+            ],
+            "closed": [
+              {
+                "employee_id": "...",
+                "employee_name": "...",
+                "email": "...",
+                "in_at": "...",
+                "out_at": "...",
+                "in_office_id": "...",
+                "out_office_id": "..."
+              },
+              ...
+            ],
+            "no_entries": [
+              { "employee_id": "...", "employee_name": "...", "email": "..." },
+              ...
+            ]
+          },
+          "meta": { ... }
+        }
+        """
+        # Fecha objetivo (YYYY-MM-DD). Si no viene, usamos hoy.
+        date_str: str | None = payload.get("date")
+        if date_str:
+            target_date = date.fromisoformat(date_str)
+        else:
+            target_date = date.today()
+            date_str = target_date.isoformat()
+
+        # 1) empleados activos
+        employees = self._emp_uc.list_employees(only_active=True, page_size=200)
+
+        open_list: List[Dict[str, Any]] = []
+        closed_list: List[Dict[str, Any]] = []
+        no_entries_list: List[Dict[str, Any]] = []
+
+        PAGE_SIZE = 100
+
+        for emp in employees:
+            if not emp.id:
+                continue
+
+            emp_name = " ".join(filter(None, [emp.first_name, emp.last_name])) or None
+            base_info: Dict[str, Any] = {
+                "employee_id": emp.id,
+                "employee_name": emp_name,
+                "email": emp.email,
+            }
+
+            # 2) fichajes del empleado para ese día (todas las páginas)
+            entries: List[Any] = []
+            page_num = 1
+            while True:
+                chunk = self._repo.list_work_entries(
+                    employee_id=emp.id,
+                    date_from=date_str,
+                    date_to=date_str,
+                    page=page_num,
+                    page_size=PAGE_SIZE,
+                    order_by="workEntryIn.date asc",
+                )
+                if not chunk:
+                    break
+                entries.extend(chunk)
+                if len(chunk) < PAGE_SIZE:
+                    break
+                page_num += 1
+
+            if not entries:
+                no_entries_list.append(base_info)
+                continue
+
+            # Ordenamos por in_at/out_at para tomar el último fichaje del día
+            def entry_key(we: Any) -> tuple[datetime, datetime]:
+                in_at = we.in_at if isinstance(we.in_at, datetime) else datetime.min
+                out_at = we.out_at if isinstance(we.out_at, datetime) else datetime.min
+                return (in_at, out_at)
+
+            try:
+                entries_sorted = sorted(entries, key=entry_key)
+            except Exception:
+                entries_sorted = entries
+
+            last_entry = entries_sorted[-1]
+
+            # Abierto: tiene in_at y NO tiene out_at
+            is_open = (last_entry.in_at is not None) and (last_entry.out_at is None)
+
+            # Cerrado: al menos un entry con in_at y out_at
+            last_closed_entry: Any | None = None
+            for we in reversed(entries_sorted):
+                if we.in_at is not None and we.out_at is not None:
+                    last_closed_entry = we
+                    break
+
+            if is_open:
+                open_list.append(
+                    {
+                        **base_info,
+                        "last_in_at": last_entry.in_at,
+                        "last_in_office_id": last_entry.in_office_id,
+                    }
+                )
+
+            if last_closed_entry is not None:
+                closed_list.append(
+                    {
+                        **base_info,
+                        "in_at": last_closed_entry.in_at,
+                        "out_at": last_closed_entry.out_at,
+                        "in_office_id": last_closed_entry.in_office_id,
+                        "out_office_id": last_closed_entry.out_office_id,
+                    }
+                )
+
+        return {
+            "data": {
+                "open": open_list,
+                "closed": closed_list,
+                "no_entries": no_entries_list,
+            },
+            "meta": {
+                "date": date_str,
+                "active_employees": len(employees),
+                "open_count": len(open_list),
+                "closed_count": len(closed_list),
+                "no_entries_count": len(no_entries_list),
+            },
+        }
+
