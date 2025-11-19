@@ -1,10 +1,10 @@
 # application/use_cases/office_use_cases.py
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from application.interfaces.sesame_port import SesamePort
-from domain.models.employee_office_assignation import EmployeeOfficeAssignation
+from sesame_connector.application.interfaces.sesame_port import SesamePort
+from sesame_connector.domain.models.employee_office_assignation import EmployeeOfficeAssignation
 
 
 SAFE_PAGE_SIZE = 200

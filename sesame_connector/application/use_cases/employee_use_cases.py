@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional
 
-from application.interfaces.sesame_port import SesamePort
-from domain.models.employee import Employee
+from sesame_connector.application.interfaces.sesame_port import SesamePort
+from sesame_connector.domain.models.employee import Employee
 
 
 class EmployeeUseCases:

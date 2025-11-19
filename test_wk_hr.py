@@ -5,10 +5,10 @@ import json
 import logging
 from pathlib import Path
 
-from config.settings import Settings
-from config.endpoints_loader import load_endpoints
-from infrastructure.http.http_client import HttpClient
-from infrastructure.repositories.sesame_repository import SesameRepositoryImpl
+from sesame_connector.config import Settings
+from sesame_connector.config.endpoints_loader import load_endpoints
+from sesame_connector.infrastructure.http.http_client import HttpClient
+from sesame_connector.infrastructure.repositories import SesameRepositoryImpl
 
 
 def main() -> None:
@@ -31,7 +31,7 @@ def main() -> None:
 
     # Bootstrapping (reutilizamos tu infraestructura)
     settings = Settings.from_env()
-    endpoints = load_endpoints(Path("config") / "endpoints.yaml")
+    endpoints = load_endpoints(Path("sesame_connector/config") / "endpoints.yaml")
     http = HttpClient.from_settings(settings)
     repo = SesameRepositoryImpl(settings, http, endpoints=endpoints)
 

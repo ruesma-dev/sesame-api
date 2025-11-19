@@ -5,10 +5,10 @@ import calendar
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
-from application.interfaces.sesame_port import SesamePort
-from domain.models.employee import Employee
-from domain.models.work_entry import WorkEntry
-from domain.models.hours_bag_history import HoursBagHistory
+from sesame_connector.application.interfaces.sesame_port import SesamePort
+from sesame_connector.domain.models.employee import Employee
+from sesame_connector.domain.models.work_entry import WorkEntry
+from sesame_connector.domain.models.hours_bag_history import HoursBagHistory
 
 
 SAFE_PAGE_SIZE = 200

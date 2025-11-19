@@ -4,15 +4,15 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from domain.models.employee import Employee
-from domain.models.token_info import TokenInfo
-from domain.models.time_entry import TimeEntry
-from domain.models.work_entry import WorkEntry
-from domain.models.hours_bag_history import HoursBagHistory
-from domain.models.employee_office_assignation import EmployeeOfficeAssignation
-from domain.models.worked_hours_stat import WorkedHoursStat
-from domain.models.absence_day_off import AbsenceDayOff
-from domain.models.vacation_day_off import VacationDayOff
+from sesame_connector.domain.models.employee import Employee
+from sesame_connector.domain.models.token_info import TokenInfo
+from sesame_connector.domain.models.time_entry import TimeEntry
+from sesame_connector.domain.models.work_entry import WorkEntry
+from sesame_connector.domain.models.hours_bag_history import HoursBagHistory
+from sesame_connector.domain.models.employee_office_assignation import EmployeeOfficeAssignation
+from sesame_connector.domain.models.worked_hours_stat import WorkedHoursStat
+from sesame_connector.domain.models.absence_day_off import AbsenceDayOff
+from sesame_connector.domain.models.vacation_day_off import VacationDayOff
 
 
 class SesamePort(ABC):

@@ -4,9 +4,9 @@ from __future__ import annotations
 import calendar
 from typing import Dict, List
 
-from application.interfaces.sesame_port import SesamePort
-from domain.models.employee import Employee
-from domain.models.worked_hours_stat import WorkedHoursStat
+from sesame_connector.application.interfaces.sesame_port import SesamePort
+from sesame_connector.domain.models.employee import Employee
+from sesame_connector.domain.models.worked_hours_stat import WorkedHoursStat
 
 SAFE_PAGE_SIZE = 200  # paginación segura por petición
 

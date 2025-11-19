@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from application.interfaces.sesame_port import SesamePort
+from sesame_connector.application.interfaces.sesame_port import SesamePort
 
 
 class SecurityUseCases:

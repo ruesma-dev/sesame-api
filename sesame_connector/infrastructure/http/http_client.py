@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from config.settings import Settings
+from sesame_connector.config.settings import Settings
 
 
 class HttpClient:

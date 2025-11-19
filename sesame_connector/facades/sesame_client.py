@@ -1,21 +1,21 @@
-# interface_adapters/facades/sesame_client.py
+# sesame_connector/facades/sesame_client.py
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from datetime import date
 from typing import Any, Dict, List, Optional
-from pathlib import Path
-from datetime import date, datetime
 
+from sesame_connector.config.settings import Settings
+from sesame_connector.config.endpoints_loader import load_endpoints
+from sesame_connector.infrastructure.http.http_client import HttpClient
+from sesame_connector.infrastructure.repositories.sesame_repository import SesameRepositoryImpl
 
-from application.interfaces.sesame_port import SesamePort
-from application.use_cases.employee_use_cases import EmployeeUseCases
-from application.use_cases.day_off_use_cases import DayOffUseCases
-from application.use_cases.security_use_cases import SecurityUseCases
-from application.use_cases.worked_hours_use_cases import WorkedHoursUseCases
-from config.endpoints_loader import load_endpoints
-from config.settings import Settings
-from infrastructure.http.http_client import HttpClient
-from infrastructure.repositories.sesame_repository import SesameRepositoryImpl
+from sesame_connector.application.use_cases.employee_use_cases import EmployeeUseCases
+from sesame_connector.application.use_cases.security_use_cases import SecurityUseCases
+from sesame_connector.application.use_cases.time_analytics_use_cases import TimeAnalyticsUseCases
+from sesame_connector.application.use_cases.worked_hours_use_cases import WorkedHoursUseCases
+from sesame_connector.application.use_cases.day_off_use_cases import DayOffUseCases
+from sesame_connector.application.use_cases.daily_attendance_use_cases import DailyAttendanceUseCases
 
 
 class SesameClient:
@@ -28,40 +28,56 @@ class SesameClient:
     - Internamente usa SesameRepositoryImpl + casos de uso existentes.
     """
 
-    def __init__(self, repo: SesamePort) -> None:
+    def __init__(
+        self,
+        *,
+        repo: SesameRepositoryImpl,
+        security_uc: SecurityUseCases,
+        employee_uc: EmployeeUseCases,
+        time_analytics_uc: TimeAnalyticsUseCases,
+        worked_hours_uc: WorkedHoursUseCases,
+        day_off_uc: DayOffUseCases,
+        daily_attendance_uc: DailyAttendanceUseCases,
+    ) -> None:
         self._repo = repo
-        self._sec_uc = SecurityUseCases(repo)
-        self._emp_uc = EmployeeUseCases(repo)
-        self._wh_uc = WorkedHoursUseCases(repo)
-        self._dayoff_uc = DayOffUseCases(repo)
+
+        # Alias consistentes con lo que usan las acciones
+        self._sec_uc = security_uc
+        self._emp_uc = employee_uc
+        self._ta_uc = time_analytics_uc
+        self._wh_uc = worked_hours_uc
+        self._dayoff_uc = day_off_uc
+        self._attendance_uc = daily_attendance_uc
 
     # ------------------------------------------------------------------
     # Factoría: construir desde .env (para usar desde cualquier app)
     # ------------------------------------------------------------------
     @classmethod
-    def from_env(cls, endpoints_path: str | None = None) -> "SesameClient":
-        """
-        Crea una instancia lista para usar leyendo credenciales del entorno
-        y endpoints del YAML.
-
-        Si endpoints_path es None, usa el endpoints.yaml que viene dentro del
-        propio proyecto/librería (carpeta config en la raíz del repo/paquete).
-        """
+    def from_env(cls) -> "SesameClient":
         settings = Settings.from_env()
-
-        if endpoints_path is None:
-            # Ruta al archivo actual: .../sesame_connector/facades/sesame_client.py
-            here = Path(__file__).resolve()
-            # Raíz del proyecto/librería: subimos dos niveles
-            project_root = here.parents[2]
-            ep_path = project_root / "config" / "endpoints.yaml"
-        else:
-            ep_path = Path(endpoints_path)
-
-        endpoints = load_endpoints(str(ep_path))
         http = HttpClient.from_settings(settings)
-        repo = SesameRepositoryImpl(settings, http, endpoints=endpoints)
-        return cls(repo)
+
+        # Usamos la ruta por defecto del loader (paquete instalado)
+        endpoints = load_endpoints()
+
+        repo = SesameRepositoryImpl(settings=settings, http=http, endpoints=endpoints)
+
+        emp_uc = EmployeeUseCases(repo)
+        sec_uc = SecurityUseCases(repo)
+        wh_uc = WorkedHoursUseCases(repo)
+        ta_uc = TimeAnalyticsUseCases(repo)
+        day_off_uc = DayOffUseCases(repo)
+        daily_attendance_uc = DailyAttendanceUseCases(repo=repo, emp_uc=emp_uc, wh_uc=wh_uc)
+
+        return cls(
+            repo=repo,
+            security_uc=sec_uc,
+            employee_uc=emp_uc,
+            time_analytics_uc=ta_uc,
+            worked_hours_uc=wh_uc,
+            day_off_uc=day_off_uc,
+            daily_attendance_uc=daily_attendance_uc,
+        )
 
     # ------------------------------------------------------------------
     # Helpers internos
@@ -104,25 +120,6 @@ class SesameClient:
     def execute(self, action: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Punto de entrada principal para otras apps/microservicios.
-
-        Ejemplos de `action` soportados (se puede extender sin romper contratos):
-
-        - "token.info"
-        - "employees.list"
-
-        - "work_entries.list"
-        - "work_entries.create"
-        - "work_entries.update"
-        - "work_entries.delete"
-        - "work_entries.clock_in"
-        - "work_entries.clock_out"
-
-        - "time_entries.list"
-
-        - "day_off.absences.range_all_employees"
-        - "day_off.vacations.range_all_employees"
-
-        - "worked_hours.range_all_employees"
         """
         payload = payload or {}
 
@@ -161,6 +158,7 @@ class SesameClient:
         if action == "worked_hours.range_all_employees":
             return self._action_worked_hours_range_all_employees(payload)
 
+        # Asistencia diaria (abiertos/cerrados, horas trabajadas vs teóricas)
         if action == "work_entries.status_today_all_employees":
             return self._action_work_entries_status_today_all_employees(payload)
 
@@ -174,7 +172,6 @@ class SesameClient:
         """
         Devuelve info del token + compañía.
         """
-        # SecurityUseCases.show_token_info ya devuelve un dict
         return self._sec_uc.show_token_info()
 
     # 2) Employees
@@ -183,13 +180,7 @@ class SesameClient:
         Entrada JSON:
           {
             "only_active": true/false/null,   # opcional
-            "page_size": 200                  # opcional, chunk de paginación interna
-          }
-
-        Salida:
-          {
-            "data": [ { ...employee... }, ... ],
-            "meta": { "count": N }
+            "page_size": 200                  # opcional
           }
         """
         only_active = payload.get("only_active", None)
@@ -211,20 +202,6 @@ class SesameClient:
 
     # 3) Work entries: LIST
     def _action_work_entries_list(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Entrada JSON mínima:
-          {
-            "employee_id": "uuid",
-            "date_from": "YYYY-MM-DD",
-            "date_to":   "YYYY-MM-DD",
-            "page_size": 200,           # opcional
-            "all_pages": true/false,    # opcional, por defecto true
-            "order_by": "workEntryIn.date asc"  # opcional
-          }
-
-        Si all_pages=true → itera paginación hasta consumir todo.
-        Si all_pages=false → hace solo una llamada (puedes pasar "page").
-        """
         employee_id = self._required(payload, "employee_id")
         date_from = self._required(payload, "date_from")
         date_to = self._required(payload, "date_to")
@@ -292,32 +269,6 @@ class SesameClient:
 
     # 4) Work entries: CREATE
     def _action_work_entries_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Entrada JSON (normalizeamos a algo estable para ti):
-
-          {
-            "employee_id": "uuid",                      # obligatorio
-            "work_entry_type": "work" | "break" | ...  # opcional
-            "work_check_type_id": "uuid",              # opcional
-            "work_break_id": "uuid",                   # opcional
-
-            "in": {                                    # opcional
-              "at": "2025-09-01T08:00:00+02:00",
-              "latitude": 40.4167,
-              "longitude": -3.70325,
-              "office_id": "office-uuid"
-            },
-            "out": {                                   # opcional
-              "at": "2025-09-01T16:00:00+02:00",
-              "latitude": 40.4167,
-              "longitude": -3.70325,
-              "office_id": "office-uuid"
-            }
-          }
-
-        Salida:
-          { "data": { ...work_entry... } }
-        """
         employee_id = self._required(payload, "employee_id")
         work_entry_type = payload.get("work_entry_type")
         work_check_type_id = payload.get("work_check_type_id")
@@ -345,27 +296,6 @@ class SesameClient:
 
     # 5) Work entries: UPDATE
     def _action_work_entries_update(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Entrada:
-
-          {
-            "work_entry_id": "uuid",                # obligatorio
-            "work_entry_type": "work" | "break"...  # opcional
-
-            "in": {                                 # opcional
-              "at": "ISO",
-              "latitude": float,
-              "longitude": float,
-              "office_id": "uuid"
-            },
-            "out": {                                # opcional
-              "at": "ISO",
-              "latitude": float,
-              "longitude": float,
-              "office_id": "uuid"
-            }
-          }
-        """
         work_entry_id = self._required(payload, "work_entry_id")
         work_entry_type = payload.get("work_entry_type")
 
@@ -388,30 +318,12 @@ class SesameClient:
 
     # 6) Work entries: DELETE
     def _action_work_entries_delete(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Entrada:
-          { "work_entry_id": "uuid" }
-        """
         work_entry_id = self._required(payload, "work_entry_id")
         self._repo.delete_work_entry(work_entry_id=work_entry_id)
-        # Si no lanza excepción, consideramos éxito.
         return {"ok": True, "work_entry_id": work_entry_id}
 
     # 7) Work entries: CLOCK-IN
     def _action_work_entries_clock_in(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Entrada:
-
-          {
-            "employee_id": "uuid",
-            "coordinates": {
-              "latitude": float,
-              "longitude": float
-            },
-            "work_check_type_id": "uuid",    # opcional
-            "work_break_id": "uuid"          # opcional
-          }
-        """
         employee_id = self._required(payload, "employee_id")
         coords = payload.get("coordinates") or {}
         work_check_type_id = payload.get("work_check_type_id")
@@ -428,17 +340,6 @@ class SesameClient:
 
     # 8) Work entries: CLOCK-OUT
     def _action_work_entries_clock_out(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Entrada:
-
-          {
-            "employee_id": "uuid",
-            "coordinates": {
-              "latitude": float,
-              "longitude": float
-            }
-          }
-        """
         employee_id = self._required(payload, "employee_id")
         coords = payload.get("coordinates") or {}
 
@@ -451,19 +352,6 @@ class SesameClient:
 
     # 9) Time entries: LIST
     def _action_time_entries_list(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Entrada:
-
-          {
-            "employee_id": "uuid|null",     # opcional
-            "date_from": "YYYY-MM-DD",      # opcional
-            "date_to": "YYYY-MM-DD",        # opcional
-            "employee_status": "active",    # opcional (por defecto 'active')
-            "page": 1,
-            "page_size": 200,
-            "all_pages": true/false
-          }
-        """
         employee_id = payload.get("employee_id")
         date_from = payload.get("date_from")
         date_to = payload.get("date_to")
@@ -492,7 +380,6 @@ class SesameClient:
                 },
             }
 
-        # Traer todo
         out: List[Any] = []
         current_page = 1
         while True:
@@ -522,16 +409,8 @@ class SesameClient:
             },
         }
 
-    # 10) Day Offs: AUSENCIAS (todos los empleados activos en rango)
+    # 10) Day Offs: AUSENCIAS
     def _action_absences_range_all_employees(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Entrada:
-
-          {
-            "date_from": "YYYY-MM-DD",
-            "date_to": "YYYY-MM-DD"
-          }
-        """
         date_from = self._required(payload, "date_from")
         date_to = self._required(payload, "date_to")
 
@@ -551,16 +430,8 @@ class SesameClient:
             },
         }
 
-    # 11) Day Offs: VACACIONES (todos los empleados activos en rango)
+    # 11) Day Offs: VACACIONES
     def _action_vacations_range_all_employees(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Entrada:
-
-          {
-            "date_from": "YYYY-MM-DD",
-            "date_to": "YYYY-MM-DD"
-          }
-        """
         date_from = self._required(payload, "date_from")
         date_to = self._required(payload, "date_to")
 
@@ -582,15 +453,6 @@ class SesameClient:
 
     # 12) Worked Hours Report: rango, todos los empleados
     def _action_worked_hours_range_all_employees(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Entrada:
-
-          {
-            "date_from": "YYYY-MM-DD",
-            "date_to": "YYYY-MM-DD",
-            "with_checks": false   # opcional
-          }
-        """
         date_from = self._required(payload, "date_from")
         date_to = self._required(payload, "date_to")
         with_checks = bool(payload.get("with_checks", False))
@@ -611,150 +473,37 @@ class SesameClient:
             },
         }
 
+    # 13) Asistencia diaria: abiertos / cerrados / sin fichajes
     def _action_work_entries_status_today_all_employees(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Devuelve, para una fecha (por defecto hoy), los empleados activos
-        que tienen fichajes abiertos/cerrados.
-
-        Estructura de salida:
-        {
-          "data": {
-            "open": [
-              {
-                "employee_id": "...",
-                "employee_name": "...",
-                "email": "...",
-                "last_in_at": "...",
-                "last_in_office_id": "..."
-              },
-              ...
-            ],
-            "closed": [
-              {
-                "employee_id": "...",
-                "employee_name": "...",
-                "email": "...",
-                "in_at": "...",
-                "out_at": "...",
-                "in_office_id": "...",
-                "out_office_id": "..."
-              },
-              ...
-            ],
-            "no_entries": [
-              { "employee_id": "...", "employee_name": "...", "email": "..." },
-              ...
-            ]
-          },
-          "meta": { ... }
-        }
+        Devuelve JSON con:
+          - open: fichajes abiertos hoy
+          - closed: fichajes cerrados hoy + info de horas trabajadas/teóricas
+          - no_entries: empleados activos sin fichajes hoy
         """
-        # Fecha objetivo (YYYY-MM-DD). Si no viene, usamos hoy.
-        date_str: str | None = payload.get("date")
-        if date_str:
-            target_date = date.fromisoformat(date_str)
-        else:
-            target_date = date.today()
-            date_str = target_date.isoformat()
+        date_str: Optional[str] = payload.get("date")
+        if not date_str:
+            date_str = date.today().isoformat()
 
-        # 1) empleados activos
-        employees = self._emp_uc.list_employees(only_active=True, page_size=200)
+        summary = self._attendance_uc.build_status_for_date(date_str=date_str)
 
-        open_list: List[Dict[str, Any]] = []
-        closed_list: List[Dict[str, Any]] = []
-        no_entries_list: List[Dict[str, Any]] = []
-
-        PAGE_SIZE = 100
-
-        for emp in employees:
-            if not emp.id:
-                continue
-
-            emp_name = " ".join(filter(None, [emp.first_name, emp.last_name])) or None
-            base_info: Dict[str, Any] = {
-                "employee_id": emp.id,
-                "employee_name": emp_name,
-                "email": emp.email,
-            }
-
-            # 2) fichajes del empleado para ese día (todas las páginas)
-            entries: List[Any] = []
-            page_num = 1
-            while True:
-                chunk = self._repo.list_work_entries(
-                    employee_id=emp.id,
-                    date_from=date_str,
-                    date_to=date_str,
-                    page=page_num,
-                    page_size=PAGE_SIZE,
-                    order_by="workEntryIn.date asc",
-                )
-                if not chunk:
-                    break
-                entries.extend(chunk)
-                if len(chunk) < PAGE_SIZE:
-                    break
-                page_num += 1
-
-            if not entries:
-                no_entries_list.append(base_info)
-                continue
-
-            # Ordenamos por in_at/out_at para tomar el último fichaje del día
-            def entry_key(we: Any) -> tuple[datetime, datetime]:
-                in_at = we.in_at if isinstance(we.in_at, datetime) else datetime.min
-                out_at = we.out_at if isinstance(we.out_at, datetime) else datetime.min
-                return (in_at, out_at)
-
-            try:
-                entries_sorted = sorted(entries, key=entry_key)
-            except Exception:
-                entries_sorted = entries
-
-            last_entry = entries_sorted[-1]
-
-            # Abierto: tiene in_at y NO tiene out_at
-            is_open = (last_entry.in_at is not None) and (last_entry.out_at is None)
-
-            # Cerrado: al menos un entry con in_at y out_at
-            last_closed_entry: Any | None = None
-            for we in reversed(entries_sorted):
-                if we.in_at is not None and we.out_at is not None:
-                    last_closed_entry = we
-                    break
-
-            if is_open:
-                open_list.append(
-                    {
-                        **base_info,
-                        "last_in_at": last_entry.in_at,
-                        "last_in_office_id": last_entry.in_office_id,
-                    }
-                )
-
-            if last_closed_entry is not None:
-                closed_list.append(
-                    {
-                        **base_info,
-                        "in_at": last_closed_entry.in_at,
-                        "out_at": last_closed_entry.out_at,
-                        "in_office_id": last_closed_entry.in_office_id,
-                        "out_office_id": last_closed_entry.out_office_id,
-                    }
-                )
+        open_rows = [self._dump_model(r) for r in summary.open_entries]
+        closed_rows = [self._dump_model(r) for r in summary.closed_entries]
+        no_entries_rows = [self._dump_model(r) for r in summary.no_entries]
 
         return {
             "data": {
-                "open": open_list,
-                "closed": closed_list,
-                "no_entries": no_entries_list,
+                "open": open_rows,
+                "closed": closed_rows,
+                "no_entries": no_entries_rows,
             },
             "meta": {
-                "date": date_str,
-                "active_employees": len(employees),
-                "open_count": len(open_list),
-                "closed_count": len(closed_list),
-                "no_entries_count": len(no_entries_list),
+                "date": summary.date,
+                "active_employees": summary.active_employees,
+                "open_count": len(open_rows),
+                "closed_count": len(closed_rows),
+                "no_entries_count": len(no_entries_rows),
+                "closed_met_schedule_count": summary.closed_met_schedule_count,
+                "closed_not_met_schedule_count": summary.closed_not_met_schedule_count,
             },
         }
-

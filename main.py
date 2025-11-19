@@ -4,14 +4,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from config.settings import Settings
-from config.endpoints_loader import load_endpoints
-from infrastructure.http.http_client import HttpClient
-from infrastructure.filesystem.csv_repository import CsvRepository
-from infrastructure.repositories.sesame_repository import SesameRepositoryImpl
-from application.use_cases.security_use_cases import SecurityUseCases
-from application.use_cases.employee_use_cases import EmployeeUseCases
-from interface_adapters.controllers.cli_controller import CLIController
+from sesame_connector.config import Settings
+from sesame_connector.config.endpoints_loader import load_endpoints
+from sesame_connector.infrastructure.http.http_client import HttpClient
+from sesame_connector.infrastructure.filesystem.csv_repository import CsvRepository
+from sesame_connector.infrastructure.repositories import SesameRepositoryImpl
+from sesame_connector.application.use_cases.security_use_cases import SecurityUseCases
+from sesame_connector.application import EmployeeUseCases
+from sesame_connector.interface_adapters.controllers.cli_controller import CLIController
 
 
 def build_container() -> CLIController:
@@ -19,7 +19,7 @@ def build_container() -> CLIController:
     settings = Settings.from_env()
 
     # Cargar endpoints desde YAML
-    endpoints = load_endpoints(Path("config") / "endpoints.yaml")
+    endpoints = load_endpoints(Path("sesame_connector/config") / "endpoints.yaml")
 
     # Http client
     http = HttpClient.from_settings(settings)

@@ -5,14 +5,14 @@ import csv
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from domain.models.employee import Employee
-from domain.models.work_entry import WorkEntry
-from domain.models.time_entry import TimeEntry
-from domain.models.office import Office
-from domain.models.employee_office_assignation import EmployeeOfficeAssignation
-from domain.models.worked_hours_stat import WorkedHoursStat
-from domain.models.absence_day_off import AbsenceDayOff
-from domain.models.vacation_day_off import VacationDayOff
+from sesame_connector.domain.models.employee import Employee
+from sesame_connector.domain.models.work_entry import WorkEntry
+from sesame_connector.domain.models import TimeEntry
+from sesame_connector.domain.models import Office
+from sesame_connector.domain.models.employee_office_assignation import EmployeeOfficeAssignation
+from sesame_connector.domain.models import WorkedHoursStat
+from sesame_connector.domain.models import AbsenceDayOff
+from sesame_connector.domain.models.vacation_day_off import VacationDayOff
 
 
 class CsvRepository:

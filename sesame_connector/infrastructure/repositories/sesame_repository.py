@@ -7,24 +7,24 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from config.settings import Settings
-from infrastructure.http.http_client import HttpClient
+from sesame_connector.config.settings import Settings
+from sesame_connector.infrastructure.http.http_client import HttpClient
 
 # Domain models
-from domain.models.employee import Employee as EmployeeModel
-from domain.models.work_entry import WorkEntry as WorkEntryModel
-from domain.models.time_entry import TimeEntry as TimeEntryModel
-from domain.models.hours_bag_history import HoursBagHistory as HoursBagHistoryModel
-from domain.models.employee_office_assignation import (
+from sesame_connector.domain.models.employee import Employee as EmployeeModel
+from sesame_connector.domain.models.work_entry import WorkEntry as WorkEntryModel
+from sesame_connector.domain.models.time_entry import TimeEntry as TimeEntryModel
+from sesame_connector.domain.models.hours_bag_history import HoursBagHistory as HoursBagHistoryModel
+from sesame_connector.domain.models.employee_office_assignation import (
     EmployeeOfficeAssignation as EmployeeOfficeAssignationModel,
 )
-from domain.models.office import Office as OfficeModel
-from domain.models.worked_hours_stat import WorkedHoursStat as WorkedHoursStatModel
-from domain.models.absence_day_off import AbsenceDayOff as AbsenceDayOffModel
-from domain.models.vacation_day_off import VacationDayOff as VacationDayOffModel
+from sesame_connector.domain.models.office import Office as OfficeModel
+from sesame_connector.domain.models.worked_hours_stat import WorkedHoursStat as WorkedHoursStatModel
+from sesame_connector.domain.models.absence_day_off import AbsenceDayOff as AbsenceDayOffModel
+from sesame_connector.domain.models.vacation_day_off import VacationDayOff as VacationDayOffModel
 
 # Puerto (interfaz) de aplicación
-from application.interfaces.sesame_port import SesamePort
+from sesame_connector.application.interfaces.sesame_port import SesamePort
 
 
 SAFE_LIMIT_DEFAULT = 100

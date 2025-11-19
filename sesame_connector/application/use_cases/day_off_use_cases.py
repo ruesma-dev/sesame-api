@@ -1,12 +1,12 @@
 # application/use_cases/day_off_use_cases.py
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import List
 
-from application.interfaces.sesame_port import SesamePort
-from domain.models.employee import Employee
-from domain.models.absence_day_off import AbsenceDayOff
-from domain.models.vacation_day_off import VacationDayOff
+from sesame_connector.application.interfaces.sesame_port import SesamePort
+from sesame_connector.domain.models.employee import Employee
+from sesame_connector.domain.models.absence_day_off import AbsenceDayOff
+from sesame_connector.domain.models.vacation_day_off import VacationDayOff
 
 SAFE_PAGE_SIZE = 200
 

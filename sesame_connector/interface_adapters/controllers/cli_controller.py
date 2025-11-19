@@ -3,23 +3,20 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Tuple
 
-from application.use_cases.employee_use_cases import EmployeeUseCases
-from application.use_cases.day_off_use_cases import DayOffUseCases
-from application.use_cases.security_use_cases import SecurityUseCases
-from application.use_cases.worked_hours_use_cases import WorkedHoursUseCases
-from domain.models.employee import Employee
-from domain.models.work_entry import WorkEntry
-from domain.models.time_entry import TimeEntry
-from domain.models.hours_bag_history import HoursBagHistory
-from domain.models.office import Office
-from domain.models.employee_office_assignation import EmployeeOfficeAssignation
-from infrastructure.filesystem.csv_repository import CsvRepository
-from infrastructure.repositories.sesame_repository import SesameRepositoryImpl
+from sesame_connector.application import EmployeeUseCases
+from sesame_connector.application.use_cases.day_off_use_cases import DayOffUseCases
+from sesame_connector.application.use_cases.security_use_cases import SecurityUseCases
+from sesame_connector.application.use_cases.worked_hours_use_cases import WorkedHoursUseCases
+from sesame_connector.domain.models.employee import Employee
+from sesame_connector.domain.models.work_entry import WorkEntry
+from sesame_connector.domain.models import Office
+from sesame_connector.domain.models.employee_office_assignation import EmployeeOfficeAssignation
+from sesame_connector.infrastructure.filesystem.csv_repository import CsvRepository
+from sesame_connector.infrastructure.repositories import SesameRepositoryImpl
 
 
 class CLIController:
