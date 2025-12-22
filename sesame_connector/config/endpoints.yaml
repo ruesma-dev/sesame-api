@@ -1,8 +1,26 @@
-# config/endpoints.yaml
+# sesame_connector/config/endpoints.yaml
 token_info: "/core/v3/info"
-employees_list: "/core/v3/employees"
 
-# Work Entries
+# Employees
+employees_list: "/core/v3/employees"
+employees_create: "/core/v3/employees"
+
+# Projects
+projects_list: "/project/v1/projects"
+projects_create: "/project/v1/projects"
+
+# Planned tasks (si tu tenant lo soporta con projectId como filtro)
+planned_tasks_list: "/project/v1/planned-tasks"
+planned_tasks_create: "/project/v1/planned-tasks"
+
+# Time Entries (tareas / imputaciones)
+time_entries_list: "/project/v1/time-entries"
+time_entries_start: "/project/v1/time-entries/start"
+time_entries_stop: "/project/v1/time-entries/stop"
+time_entries_update: "/project/v1/time-entries/{id}"
+time_entries_delete: "/project/v1/time-entries/{id}"
+
+# Work Entries (fichajes)
 work_entries_list: "/schedule/v1/work-entries"
 work_entries_create: "/schedule/v1/work-entries"
 work_entries_update: "/schedule/v1/work-entries/{id}"
@@ -10,21 +28,9 @@ work_entries_delete: "/schedule/v1/work-entries/{id}"
 work_entries_clock_in: "/schedule/v1/work-entries/clock-in"
 work_entries_clock_out: "/schedule/v1/work-entries/clock-out"
 
-# Time Entries
-time_entries_list: "/project/v1/time-entries"
-
-# Hours bag rule history
-hours_bag_rule_history_list: "/schedule/v1/hours-bag-rule-history"
-
-# Employee–Office assignations
-employee_office_assignations_list: "/core/v3/employee-office-assignations"
-
-# Offices
-offices_list: "/core/v3/offices"
-
-# Worked hours report (estadísticas por empleado)
+# Worked hours (trabajadas vs teóricas)
 worked_hours_report_list: "/schedule/v1/reports/worked-hours"
 
-# NEW: Day Offs
+# Day Offs
 absence_day_off_list: "/schedule/v1/absence-day-off"
 vacation_day_off_list: "/schedule/v1/vacation-day-off"

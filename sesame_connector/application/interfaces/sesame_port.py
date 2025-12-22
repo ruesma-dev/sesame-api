@@ -1,29 +1,25 @@
-# application/interfaces/sesame_port.py
+# sesame_connector/application/ports/sesame_port.py
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from sesame_connector.domain.models.employee import Employee
-from sesame_connector.domain.models.token_info import TokenInfo
-from sesame_connector.domain.models.time_entry import TimeEntry
-from sesame_connector.domain.models.work_entry import WorkEntry
-from sesame_connector.domain.models.hours_bag_history import HoursBagHistory
-from sesame_connector.domain.models.employee_office_assignation import EmployeeOfficeAssignation
-from sesame_connector.domain.models.worked_hours_stat import WorkedHoursStat
 from sesame_connector.domain.models.absence_day_off import AbsenceDayOff
+from sesame_connector.domain.models.employee import Employee
+from sesame_connector.domain.models.project import Project
+from sesame_connector.domain.models.time_entry import TimeEntry
 from sesame_connector.domain.models.vacation_day_off import VacationDayOff
+from sesame_connector.domain.models.work_entry import WorkEntry
+from sesame_connector.domain.models.worked_hours_stat import WorkedHoursStat
 
 
 class SesamePort(ABC):
-    # ─────────── Security / Company ───────────
+    # Security / company
     @abstractmethod
-    def get_token_info(self) -> TokenInfo: ...
+    def get_token_info_raw(self) -> Dict:
+        raise NotImplementedError
 
-    @abstractmethod
-    def get_token_info_raw(self) -> Dict: ...
-
-    # ─────────── Employees ───────────
+    # Employees
     @abstractmethod
     def list_employees(
         self,
@@ -31,15 +27,15 @@ class SesamePort(ABC):
         only_active: Optional[bool] = None,
         page: int = 1,
         page_size: int = 200,
-    ) -> List[Employee]: ...
+    ) -> List[Employee]:
+        raise NotImplementedError
 
+    # Projects
     @abstractmethod
-    def create_employee(self, employee: Employee) -> Employee: ...
+    def list_projects(self, *, page: int = 1, page_size: int = 100) -> List[Project]:
+        raise NotImplementedError
 
-    @abstractmethod
-    def bulk_create_employees(self, employees: Iterable[Employee]) -> List[Employee]: ...
-
-    # ─────────── Project: time entries ───────────
+    # Time entries
     @abstractmethod
     def list_time_entries(
         self,
@@ -47,12 +43,13 @@ class SesamePort(ABC):
         employee_id: Optional[str],
         date_from: Optional[str],
         date_to: Optional[str],
+        employee_status: str = "active",
         page: int = 1,
         page_size: int = 200,
-        extra_params: Optional[Dict] = None,
-    ) -> List[TimeEntry]: ...
+    ) -> List[TimeEntry]:
+        raise NotImplementedError
 
-    # ─────────── Schedule: work entries ───────────
+    # Work entries
     @abstractmethod
     def list_work_entries(
         self,
@@ -62,61 +59,11 @@ class SesamePort(ABC):
         date_to: Optional[str],
         page: int = 1,
         page_size: int = 200,
-        extra_params: Optional[Dict] = None,
-    ) -> List[WorkEntry]: ...
+        order_by: Optional[str] = None,
+    ) -> List[WorkEntry]:
+        raise NotImplementedError
 
-    @abstractmethod
-    def create_work_entry(self, payload: Dict) -> WorkEntry: ...
-
-    @abstractmethod
-    def update_work_entry(self, work_entry_id: str, payload: Dict) -> WorkEntry: ...
-
-    @abstractmethod
-    def delete_work_entry(self, work_entry_id: str) -> bool: ...
-
-    @abstractmethod
-    def clock_in(
-        self,
-        *,
-        employee_id: str,
-        coordinates: Optional[Dict] = None,
-        work_check_type_id: Optional[str] = None,
-        work_break_id: Optional[str] = None,
-    ) -> WorkEntry: ...
-
-    @abstractmethod
-    def clock_out(
-        self,
-        *,
-        employee_id: str,
-        coordinates: Optional[Dict] = None,
-    ) -> WorkEntry: ...
-
-    # ─────────── Hours Bag ───────────
-    @abstractmethod
-    def list_hours_bag_rule_history(
-        self,
-        *,
-        date_from: Optional[str],
-        date_to: Optional[str],
-        employee_ids: Optional[List[str]] = None,
-        hours_bag_rule_ids: Optional[List[str]] = None,
-        page: int = 1,
-        page_size: int = 200,
-    ) -> List[HoursBagHistory]: ...
-
-    # ─────────── Employee Office Assignations ───────────
-    @abstractmethod
-    def list_employee_office_assignations(
-        self,
-        *,
-        employee_id: Optional[str] = None,
-        office_id: Optional[str] = None,
-        page: int = 1,
-        page_size: int = 200,
-    ) -> List[EmployeeOfficeAssignation]: ...
-
-    # ─────────── Worked Hours Report ───────────
+    # Worked hours report
     @abstractmethod
     def list_worked_hours_report(
         self,
@@ -127,9 +74,10 @@ class SesamePort(ABC):
         with_checks: Optional[bool] = None,
         page: int = 1,
         page_size: int = 200,
-    ) -> Tuple[List[WorkedHoursStat], Dict]: ...
+    ) -> Tuple[List[WorkedHoursStat], Dict]:
+        raise NotImplementedError
 
-    # ─────────── NEW: Day Offs ───────────
+    # Day offs
     @abstractmethod
     def list_absence_day_off(
         self,
@@ -140,7 +88,8 @@ class SesamePort(ABC):
         order_by: Optional[str] = None,
         page: int = 1,
         page_size: int = 200,
-    ) -> Tuple[List[AbsenceDayOff], Dict]: ...
+    ) -> Tuple[List[AbsenceDayOff], Dict]:
+        raise NotImplementedError
 
     @abstractmethod
     def list_vacation_day_off(
@@ -152,4 +101,5 @@ class SesamePort(ABC):
         order_by: Optional[str] = None,
         page: int = 1,
         page_size: int = 200,
-    ) -> Tuple[List[VacationDayOff], Dict]: ...
+    ) -> Tuple[List[VacationDayOff], Dict]:
+        raise NotImplementedError

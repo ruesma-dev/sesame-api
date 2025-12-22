@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
 
 import yaml
 
@@ -12,10 +12,9 @@ DEFAULT_ENDPOINTS_PATH = HERE / "endpoints.yaml"
 
 def load_endpoints(path: str | Path | None = None) -> Dict[str, str]:
     """
-    Lee un YAML con pares clave→ruta y devuelve un dict[str, str].
+    Carga endpoints desde YAML: clave -> ruta.
     """
     p = Path(path) if path is not None else DEFAULT_ENDPOINTS_PATH
-
     if not p.exists():
         raise FileNotFoundError(f"No se encontró el YAML de endpoints en: {p}")
 
@@ -29,5 +28,6 @@ def load_endpoints(path: str | Path | None = None) -> Dict[str, str]:
     for k, v in data.items():
         if not isinstance(v, str):
             raise ValueError(f"Endpoint '{k}' debe ser string, recibido: {type(v).__name__}")
+        v = v.strip()
         out[str(k)] = v if v.startswith("/") else f"/{v}"
     return out

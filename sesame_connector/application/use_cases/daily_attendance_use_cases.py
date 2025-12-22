@@ -87,8 +87,20 @@ class DailyAttendanceUseCases:
             return date_str
         return date.today().isoformat()
 
-    def _active_employees(self) -> List[Employee]:
-        return self._emp_uc.list_employees(only_active=True, page_size=SAFE_PAGE_SIZE)
+    def _active_employees(self, employee_ids: Optional[List[str]] = None) -> List[Employee]:
+        """
+        Devuelve la lista de empleados activos.
+        Si `employee_ids` viene informado y no está vacío,
+        se filtra para devolver sólo esos ids.
+        """
+        employees = self._emp_uc.list_employees(only_active=True, page_size=SAFE_PAGE_SIZE)
+
+        if not employee_ids:
+            # None o lista vacía → todos los activos
+            return employees
+
+        allowed = set(employee_ids)
+        return [e for e in employees if e.id in allowed]
 
     @staticmethod
     def _is_work_entry(entry: WorkEntry) -> bool:
@@ -192,15 +204,25 @@ class DailyAttendanceUseCases:
 
     # ───────────────── 4) Orquestador: estado diario ─────────────────
 
-    def build_status_for_date(self, *, date_str: str) -> DailyAttendanceSummary:
+    def build_status_for_date(
+        self,
+        *,
+        date_str: str,
+        employee_ids: Optional[List[str]] = None,
+    ) -> DailyAttendanceSummary:
         """
         Orquesta:
           - fichajes abiertos/cerrados
           - horas trabajadas / teóricas
         y devuelve un resumen de asistencia por empleado.
+
+        Si `employee_ids` viene informado:
+          - Sólo procesa esos empleados (si están activos).
+        Si es None o lista vacía:
+          - Procesa todos los empleados activos.
         """
         date_str = self._normalize_date(date_str)
-        employees = self._active_employees()
+        employees = self._active_employees(employee_ids=employee_ids)
 
         # stats de horas (trabajadas + teóricas) en un solo viaje
         stats: List[WorkedHoursStat] = self._wh_uc.list_worked_hours_all_employees_range(

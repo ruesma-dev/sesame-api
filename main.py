@@ -1,127 +1,295 @@
 # main.py
 from __future__ import annotations
 
+import argparse
+import json
 import logging
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
 from pathlib import Path
+from typing import Any, Callable, List, Optional
+from uuid import UUID
 
-from sesame_connector.config import Settings
-from sesame_connector.config.endpoints_loader import load_endpoints
-from sesame_connector.infrastructure.http.http_client import HttpClient
-from sesame_connector.infrastructure.filesystem.csv_repository import CsvRepository
-from sesame_connector.infrastructure.repositories import SesameRepositoryImpl
-from sesame_connector.application.use_cases.security_use_cases import SecurityUseCases
-from sesame_connector.application import EmployeeUseCases
-from sesame_connector.interface_adapters.controllers.cli_controller import CLIController
+from sesame_connector.facades.sesame_client import SesameClient
 
 
-def build_container() -> CLIController:
-    # Cargar settings de .env (sin hardcodear credenciales)
-    settings = Settings.from_env()
+Handler = Callable[[argparse.Namespace, SesameClient], int]
 
-    # Cargar endpoints desde YAML
-    endpoints = load_endpoints(Path("sesame_connector/config") / "endpoints.yaml")
 
-    # Http client
-    http = HttpClient.from_settings(settings)
+def _setup_logging(level: str = "INFO") -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
 
-    # Repo Sesame
-    sesame_repo = SesameRepositoryImpl(settings, http, endpoints=endpoints)
 
-    # CSV repo (usa nombres fijos como pediste en CsvRepository)
-    csv_repo = CsvRepository(output_dir="output")
+def _json_default(o: Any) -> Any:
+    """
+    Encoder robusto para imprimir JSON en CLI/console.
 
-    # Use cases
-    sec_uc = SecurityUseCases(sesame_repo)
-    emp_uc = EmployeeUseCases(sesame_repo)
+    Motivo: algunas respuestas del cliente pueden contener datetime (u otros tipos)
+    y json.dumps() estándar falla con:
+      TypeError: Object of type datetime is not JSON serializable
+    """
+    # Fechas
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
 
-    # Controller
-    return CLIController(sesame_repo, csv_repo, sec_uc, emp_uc)
+    # Números exactos
+    if isinstance(o, Decimal):
+        # Si prefieres evitar pérdida de precisión, usa str(o)
+        return float(o)
+
+    # Identificadores / rutas
+    if isinstance(o, (UUID, Path)):
+        return str(o)
+
+    # Enums
+    if isinstance(o, Enum):
+        return o.value
+
+    # Colecciones
+    if isinstance(o, (set, tuple)):
+        return list(o)
+
+    # Dataclasses
+    if is_dataclass(o):
+        return asdict(o)
+
+    # Pydantic v2
+    if hasattr(o, "model_dump") and callable(getattr(o, "model_dump")):
+        return o.model_dump()
+
+    # Pydantic v1
+    if hasattr(o, "dict") and callable(getattr(o, "dict")):
+        return o.dict()
+
+    # Fallback (último recurso)
+    return str(o)
+
+
+def _print_json(obj: object) -> None:
+    print(json.dumps(obj, ensure_ascii=False, indent=2, default=_json_default))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="sesame-connector")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    # ------------------------------------------------------------
+    # employees-list
+    # ------------------------------------------------------------
+    p = sub.add_parser("employees-list", help="Listar empleados")
+    p.add_argument("--only-active", action="store_true", default=False)
+    p.add_argument("--page-size", type=int, default=200)
+    p.set_defaults(handler=_cmd_employees_list)
+
+    # ------------------------------------------------------------
+    # projects-list
+    # ------------------------------------------------------------
+    p = sub.add_parser("projects-list", help="Listar proyectos")
+    p.add_argument("--page-size", type=int, default=100)
+    p.set_defaults(handler=_cmd_projects_list)
+
+    # ------------------------------------------------------------
+    # time-entries-list
+    # ------------------------------------------------------------
+    p = sub.add_parser("time-entries-list", help="Listar imputaciones (time entries)")
+    p.add_argument("--employee-id", default=None)
+    p.add_argument("--from", dest="date_from", default=None)
+    p.add_argument("--to", dest="date_to", default=None)
+    p.add_argument("--employee-status", default="active")
+    p.add_argument("--page-size", type=int, default=50)
+    p.add_argument("--all-pages", action="store_true", default=True)
+    p.set_defaults(handler=_cmd_time_entries_list)
+
+    # ------------------------------------------------------------
+    # time-entries-start
+    # ------------------------------------------------------------
+    p = sub.add_parser("time-entries-start", help="Iniciar imputación a proyecto/tarea")
+    p.add_argument("--employee-id", required=True)
+    p.add_argument("--project-id", required=True)
+    p.add_argument("--tag-id", required=False, default=None)
+    p.add_argument("--comment", required=False, default="")
+    p.set_defaults(handler=_cmd_time_entries_start)
+
+    # ------------------------------------------------------------
+    # time-entries-stop
+    # ------------------------------------------------------------
+    p = sub.add_parser("time-entries-stop", help="Parar imputación (cerrar time entry)")
+    p.add_argument("--time-entry-id", required=True)
+    p.add_argument("--comment", required=False, default=None)
+    p.set_defaults(handler=_cmd_time_entries_stop)
+
+    # ------------------------------------------------------------
+    # work-entries-list
+    # ------------------------------------------------------------
+    p = sub.add_parser("work-entries-list", help="Listar fichajes (work entries)")
+    p.add_argument("--employee-id", required=True)
+    p.add_argument("--from", dest="date_from", required=True)
+    p.add_argument("--to", dest="date_to", required=True)
+    p.add_argument("--page-size", type=int, default=200)
+    p.add_argument("--all-pages", action="store_true", default=True)
+    p.set_defaults(handler=_cmd_work_entries_list)
+
+    # ------------------------------------------------------------
+    # metrics-extract
+    # ------------------------------------------------------------
+    p = sub.add_parser("metrics-extract", help="Extraer métricas agregadas")
+    p.add_argument("--from", dest="date_from", required=True)
+    p.add_argument("--to", dest="date_to", required=True)
+    p.add_argument("--employee-id", action="append", dest="employee_ids", default=[])
+    p.set_defaults(handler=_cmd_metrics_extract)
+
+    return parser
+
+
+# ---------------------------------------------------------------------
+# Command handlers (usan SesameClient.execute)
+# ---------------------------------------------------------------------
+def _cmd_employees_list(args: argparse.Namespace, client: SesameClient) -> int:
+    payload = {
+        "only_active": bool(args.only_active) if args.only_active else None,
+        "page_size": int(args.page_size),
+    }
+    res = client.execute("employees.list", payload)
+    _print_json(res)
+    return 0
+
+
+def _cmd_projects_list(args: argparse.Namespace, client: SesameClient) -> int:
+    # OJO: sólo funcionará si tu SesameClient soporta "projects.list".
+    # Si tu implementación actual lo hace con otro action, cambia aquí la cadena.
+    payload = {"page_size": int(args.page_size)}
+    res = client.execute("projects.list", payload)
+    _print_json(res)
+    return 0
+
+
+def _cmd_time_entries_list(args: argparse.Namespace, client: SesameClient) -> int:
+    payload = {
+        "employee_id": args.employee_id,
+        "date_from": args.date_from,
+        "date_to": args.date_to,
+        "employee_status": args.employee_status,
+        "page_size": int(args.page_size),
+        "all_pages": bool(args.all_pages),
+    }
+    res = client.execute("time_entries.list", payload)
+    _print_json(res)
+    return 0
+
+
+def _cmd_time_entries_start(args: argparse.Namespace, client: SesameClient) -> int:
+    # OJO: sólo funcionará si tu SesameClient soporta "time_entries.start"
+    payload = {
+        "employee_id": args.employee_id,
+        "project_id": args.project_id,
+        "tag_id": args.tag_id,
+        "comment": args.comment,
+    }
+    res = client.execute("time_entries.start", payload)
+    _print_json(res)
+    return 0
+
+
+def _cmd_time_entries_stop(args: argparse.Namespace, client: SesameClient) -> int:
+    # OJO: sólo funcionará si tu SesameClient soporta "time_entries.stop"
+    payload = {
+        "time_entry_id": args.time_entry_id,
+        "comment": args.comment,
+    }
+    res = client.execute("time_entries.stop", payload)
+    _print_json(res)
+    return 0
+
+
+def _cmd_work_entries_list(args: argparse.Namespace, client: SesameClient) -> int:
+    payload = {
+        "employee_id": args.employee_id,
+        "date_from": args.date_from,
+        "date_to": args.date_to,
+        "page_size": int(args.page_size),
+        "all_pages": bool(args.all_pages),
+    }
+    res = client.execute("work_entries.list", payload)
+    _print_json(res)
+    return 0
+
+
+def _cmd_metrics_extract(args: argparse.Namespace, client: SesameClient) -> int:
+    # OJO: depende de tu action real en SesameClient (ej: "metrics.extract")
+    payload = {
+        "date_from": args.date_from,
+        "date_to": args.date_to,
+        "employee_ids": args.employee_ids or None,
+    }
+    res = client.execute("metrics.extract", payload)
+    _print_json(res)
+    return 0
+
+
+# ---------------------------------------------------------------------
+# Entrypoint ejecutable desde código: main(argv)
+# ---------------------------------------------------------------------
+def main(argv: Optional[List[str]] = None) -> int:
+    _setup_logging()
+
+    client = SesameClient.from_env()
+    parser = build_parser()
+
+    if argv is None:
+        # Si algún día quieres volver a CLI real, podrías leer sys.argv aquí.
+        # Pero tú has pedido NO usar consola, así que lo dejamos explícito.
+        raise SystemExit("Este main requiere argv (lista de argumentos).")
+
+    args = parser.parse_args(argv)
+
+    handler: Handler = getattr(args, "handler", None)
+    if handler is None:
+        raise RuntimeError(f"Subcomando sin handler: {args.cmd!r}")
+
+    return handler(args, client)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-    log = logging.getLogger("main")
+    # -----------------------------------------------------------------
+    # Aquí defines “todos los comandos” que quieres ejecutar, en orden.
+    # Cada comando es una lista como si fuera sys.argv[1:].
+    # -----------------------------------------------------------------
+    batch: List[List[str]] = [
+        ["employees-list", "--only-active", "--page-size", "200"],
+        ["projects-list", "--page-size", "100"],
+        [
+            "time-entries-list",
+            "--employee-id",
+            "9b58696a-d0d1-4294-b592-2f79a5436c77",
+            "--from",
+            "2025-12-01",
+            "--to",
+            "2026-01-01",
+            "--employee-status",
+            "active",
+            "--page-size",
+            "50",
+        ],
+        # Ejemplo start (si tu facade soporta action time_entries.start):
+        # [
+        #     "time-entries-start",
+        #     "--employee-id", "9b58696a-d0d1-4294-b592-2f79a5436c77",
+        #     "--project-id", "a4c075f3-d96e-4305-9637-5441e41a645c",
+        #     "--tag-id", "52bcd468-2d15-4a05-8c95-410f7fd14b2d",
+        #     "--comment", "Inicio vía código"
+        # ],
+    ]
 
-    # ==== Parámetros por defecto (puedes cambiarlos rápido) ====
-    YEAR = 2025
-    MONTH = 9
-    # Si quieres usar un empleado concreto para pruebas puntuales:
-    EMPLOYEE_ID = "9b58696a-d0d1-4294-b592-2f79a5436c77"
+    exit_code = 0
+    for argv in batch:
+        logging.getLogger(__name__).info("RUN CMD: %s", " ".join(argv))
+        rc = main(argv)
+        if rc != 0:
+            exit_code = rc
 
-    # ==== Flags para activar/desactivar pasos ====
-    DO_SMOKETEST = True
-    DO_EXPORT_EMPLOYEES = True
-    DO_EXPORT_OFFICES = True
-    DO_EXPORT_EMPLOYEE_OFFICE_ASSIGNATIONS = True  # << añadido
-    DO_EXPORT_WORK_ENTRIES_ALL_MONTH = True        # todos los empleados (se mantiene)
-    DO_AGGREGATES_FROM_WORK_ENTRIES = True         # coordinates / hours_by_employee / hours_by_office (se mantiene)
-    DO_HOURS_BAG_MONTH = False                     # opcional, puede salir vacío según config actual
-    DO_SINGLE_EMPLOYEE_WORK_ENTRIES = False        # por si quieres mantener pruebas con un empleado
-
-    # NUEVO: Exportar estadísticas worked-hours por RANGO (17→29 sep-2025, inclusivo)
-    DO_EXPORT_WORKED_HOURS_RANGE = True
-    WITH_CHECKS = True  # ponlo a False si no necesitas los "checks" en la respuesta
-
-    # NUEVO (mínima modificación): Exportar ausencias y vacaciones por el mismo rango
-    DO_EXPORT_DAY_OFFS_RANGE = True
-
-    # ==== Arranque ====
-    settings = Settings.from_env()
-    log.info(
-        "Sesame base_url=%s auth_scheme=%s timeout=%s",
-        settings.sesame_base_url,
-        settings.sesame_auth_scheme,
-        settings.request_timeout_seconds,
-    )
-
-    controller = build_container()
-
-    # 1) Smoke test del token (mantener siempre como test rápido)
-    if DO_SMOKETEST:
-        controller.run_token_info_smoketest()
-
-    # 2) Exportar empleados (CSV fijo: employees.csv)
-    if DO_EXPORT_EMPLOYEES:
-        controller.run_export_employees()
-
-    # 3) Exportar oficinas (CSV fijo: offices.csv)
-    if DO_EXPORT_OFFICES:
-        controller.run_export_offices()
-
-    # 4) NUEVO: Exportar asignaciones empleado–oficina (CSV fijo: employee_office_assignations.csv)
-    if DO_EXPORT_EMPLOYEE_OFFICE_ASSIGNATIONS:
-        controller.run_export_employee_office_assignations_all()
-
-    # 5) Work entries de TODOS los empleados para el mes (CSV fijo: work_entries.csv)
-    if DO_EXPORT_WORK_ENTRIES_ALL_MONTH:
-        controller.run_export_work_entries_all_month(year=YEAR, month=MONTH)
-
-    # 6) Agregados a partir de Work Entries (CSV fijos)
-    if DO_AGGREGATES_FROM_WORK_ENTRIES:
-        controller.run_company_hours_report_month(year=YEAR, month=MONTH)
-
-    # 7) (Opcional) Bolsa de horas del mes (CSV fijos)
-    if DO_HOURS_BAG_MONTH:
-        controller.run_hours_bag_month(year=YEAR, month=MONTH, employee_ids=None)
-
-    # 8) (Opcional) Prueba de un único empleado
-    if DO_SINGLE_EMPLOYEE_WORK_ENTRIES:
-        controller.run_get_work_entries_month(employee_id=EMPLOYEE_ID, year=YEAR, month=MONTH)
-
-    # 9) Worked Hours (TODOS los empleados) para el rango 17–29/09/2025 inclusivo
-    if DO_EXPORT_WORKED_HOURS_RANGE:
-        controller.run_export_worked_hours_stats_range(
-            date_from="2025-09-17",
-            date_to="2025-09-29",
-            with_checks=WITH_CHECKS,
-        )
-
-    # 10) NUEVO (mínima modificación): Ausencias y Vacaciones (empleado a empleado) mismo rango
-    if DO_EXPORT_DAY_OFFS_RANGE:
-        controller.run_export_day_offs_range(
-            date_from="2025-09-17",
-            date_to="2025-09-29",
-        )
+    raise SystemExit(exit_code)

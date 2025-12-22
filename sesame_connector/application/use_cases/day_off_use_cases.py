@@ -1,86 +1,104 @@
-# application/use_cases/day_off_use_cases.py
+# sesame_connector/application/use_cases/day_off_use_cases.py
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List, Optional, Tuple
 
 from sesame_connector.application.interfaces.sesame_port import SesamePort
-from sesame_connector.domain.models.employee import Employee
 from sesame_connector.domain.models.absence_day_off import AbsenceDayOff
 from sesame_connector.domain.models.vacation_day_off import VacationDayOff
 
-SAFE_PAGE_SIZE = 200
-
-
 class DayOffUseCases:
-    """Orquestador de Ausencias y Vacaciones, empleado a empleado (sin bulk)."""
+    def __init__(self, port: SesamePort) -> None:
+        self._port = port
 
-    def __init__(self, repo: SesamePort) -> None:
-        self._repo = repo
+    def list_absences(
+        self,
+        *,
+        employee_ids: Optional[List[str]],
+        date_from: str,
+        date_to: str,
+        order_by: Optional[str] = None,
+        page_size: int = 200,
+        all_pages: bool = True,
+    ) -> Tuple[List[AbsenceDayOff], Dict]:
+        if not all_pages:
+            return self._port.list_absence_day_off(
+                employee_ids=employee_ids,
+                date_from=date_from,
+                date_to=date_to,
+                order_by=order_by,
+                page=1,
+                page_size=page_size,
+            )
 
-    # Utilidad
-    def _all_active_employees(self) -> List[Employee]:
-        page, size = 1, SAFE_PAGE_SIZE
-        out: List[Employee] = []
+        out: List[AbsenceDayOff] = []
+        meta_last: Dict = {}
+        page = 1
         while True:
-            chunk = self._repo.list_employees(only_active=True, page=page, page_size=size)
-            if not chunk:
+            items, meta = self._port.list_absence_day_off(
+                employee_ids=employee_ids,
+                date_from=date_from,
+                date_to=date_to,
+                order_by=order_by,
+                page=page,
+                page_size=page_size,
+            )
+            meta_last = meta or {}
+            if not items:
                 break
-            out.extend(chunk)
-            if len(chunk) < size:
+            out.extend(items)
+            current = int(meta_last.get("currentPage") or page)
+            last_page = int(meta_last.get("lastPage") or current)
+            if current >= last_page:
                 break
             page += 1
-        return out
 
-    # Ausencias
-    def list_absences_all_employees_range(self, *, date_from: str, date_to: str) -> List[AbsenceDayOff]:
-        emps = self._all_active_employees()
-        out: List[AbsenceDayOff] = []
-        for e in emps:
-            if not e.id:
-                continue
-            page = 1
-            while True:
-                items, meta = self._repo.list_absence_day_off(
-                    employee_ids=[e.id],
-                    date_from=date_from,
-                    date_to=date_to,
-                    order_by="date asc",
-                    page=page,
-                    page_size=SAFE_PAGE_SIZE,
-                )
-                if not items:
-                    break
-                out.extend(items)
-                current = int((meta or {}).get("currentPage") or page)
-                last_page = int((meta or {}).get("lastPage") or current)
-                if current >= last_page:
-                    break
-                page += 1
-        return out
+        meta_out = dict(meta_last)
+        meta_out["pages_fetched"] = page
+        return out, meta_out
 
-    # Vacaciones
-    def list_vacations_all_employees_range(self, *, date_from: str, date_to: str) -> List[VacationDayOff]:
-        emps = self._all_active_employees()
+    def list_vacations(
+        self,
+        *,
+        employee_ids: Optional[List[str]],
+        date_from: str,
+        date_to: str,
+        order_by: Optional[str] = None,
+        page_size: int = 200,
+        all_pages: bool = True,
+    ) -> Tuple[List[VacationDayOff], Dict]:
+        if not all_pages:
+            return self._port.list_vacation_day_off(
+                employee_ids=employee_ids,
+                date_from=date_from,
+                date_to=date_to,
+                order_by=order_by,
+                page=1,
+                page_size=page_size,
+            )
+
         out: List[VacationDayOff] = []
-        for e in emps:
-            if not e.id:
-                continue
-            page = 1
-            while True:
-                items, meta = self._repo.list_vacation_day_off(
-                    employee_ids=[e.id],
-                    date_from=date_from,
-                    date_to=date_to,
-                    order_by="date asc",
-                    page=page,
-                    page_size=SAFE_PAGE_SIZE,
-                )
-                if not items:
-                    break
-                out.extend(items)
-                current = int((meta or {}).get("currentPage") or page)
-                last_page = int((meta or {}).get("lastPage") or current)
-                if current >= last_page:
-                    break
-                page += 1
-        return out
+        meta_last: Dict = {}
+        page = 1
+        while True:
+            items, meta = self._port.list_vacation_day_off(
+                employee_ids=employee_ids,
+                date_from=date_from,
+                date_to=date_to,
+                order_by=order_by,
+                page=page,
+                page_size=page_size,
+            )
+            meta_last = meta or {}
+            if not items:
+                break
+            out.extend(items)
+            current = int(meta_last.get("currentPage") or page)
+            last_page = int(meta_last.get("lastPage") or current)
+            if current >= last_page:
+                break
+            page += 1
+
+        meta_out = dict(meta_last)
+        meta_out["pages_fetched"] = page
+        return out, meta_out

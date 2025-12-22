@@ -1,4 +1,4 @@
-# infrastructure/http/http_client.py
+# sesame_connector/infrastructure/http/http_client.py
 from __future__ import annotations
 
 import logging
@@ -10,13 +10,22 @@ from sesame_connector.config.settings import Settings
 
 
 class HttpClient:
-    def __init__(self, *, base_url: str, token: str, auth_scheme: str = "Bearer", timeout_seconds: int = 30) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.token = token
-        self.auth_scheme = auth_scheme or "Bearer"
-        self.timeout_seconds = timeout_seconds
-        self.session = requests.Session()
-        self._logger = logging.getLogger(self.__class__.__name__)
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        token: str,
+        auth_scheme: str = "Bearer",
+        timeout_seconds: int = 30,
+        debug_http: bool = False,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._token = token
+        self._auth_scheme = auth_scheme or "Bearer"
+        self._timeout_seconds = timeout_seconds
+        self._debug_http = debug_http
+        self._session = requests.Session()
+        self._log = logging.getLogger(self.__class__.__name__)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "HttpClient":
@@ -25,40 +34,45 @@ class HttpClient:
             token=settings.sesame_api_key,
             auth_scheme=settings.sesame_auth_scheme,
             timeout_seconds=settings.request_timeout_seconds,
+            debug_http=settings.debug_http,
         )
 
-    # Headers comunes
     def _headers(self) -> Dict[str, str]:
         return {
-            "Authorization": f"{self.auth_scheme} {self.token}",
+            "Authorization": f"{self._auth_scheme} {self._token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
 
-    # Helpers para loggear la URL completa ya preparada (con querystring)
-    def _prepared_url(self, method: str, path: str, params: Optional[Dict[str, Any]] = None) -> str:
-        url = f"{self.base_url}{path}"
-        req = requests.Request(method=method.upper(), url=url, params=params, headers=self._headers())
-        prepped = req.prepare()
-        return prepped.url  # type: ignore[return-value]
+    def _url(self, path: str) -> str:
+        return f"{self._base_url}{path}"
 
-    # Métodos HTTP
-    def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> requests.Response:
-        url_full = self._prepared_url("GET", path, params=params)
-        self._logger.info("HTTP GET %s", url_full)
-        return self.session.get(url_full, headers=self._headers(), timeout=self.timeout_seconds)
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+    ) -> requests.Response:
+        url = self._url(path)
+        self._log.info("HTTP %s %s", method.upper(), url)
+        resp = self._session.request(
+            method=method.upper(),
+            url=url,
+            headers=self._headers(),
+            params=params,
+            json=json_body,
+            timeout=self._timeout_seconds,
+        )
 
-    def post(self, path: str, json: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None) -> requests.Response:
-        url_full = self._prepared_url("POST", path, params=params)
-        self._logger.info("HTTP POST %s", url_full)
-        return self.session.post(url_full, headers=self._headers(), json=json, timeout=self.timeout_seconds)
+        ctype = resp.headers.get("Content-Type", "")
+        self._log.info("HTTP %s ctype=%s", resp.status_code, ctype)
 
-    def put(self, path: str, json: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None) -> requests.Response:
-        url_full = self._prepared_url("PUT", path, params=params)
-        self._logger.info("HTTP PUT %s", url_full)
-        return self.session.put(url_full, headers=self._headers(), json=json, timeout=self.timeout_seconds)
+        if self._debug_http:
+            try:
+                self._log.info("Response JSON: %s", resp.json())
+            except Exception:
+                self._log.info("Response TEXT: %s", resp.text[:2000])
 
-    def delete(self, path: str, params: Optional[Dict[str, Any]] = None) -> requests.Response:
-        url_full = self._prepared_url("DELETE", path, params=params)
-        self._logger.info("HTTP DELETE %s", url_full)
-        return self.session.delete(url_full, headers=self._headers(), timeout=self.timeout_seconds)
+        return resp

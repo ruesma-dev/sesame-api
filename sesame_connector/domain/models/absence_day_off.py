@@ -1,30 +1,30 @@
-# domain/models/absence_day_off.py
+# sesame_connector/domain/models/absence_day_off.py
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Optional, Dict, Any
+import datetime as dt
+from typing import Any, Dict, Optional
 
-from pydantic import BaseModel
+from sesame_connector.domain.models.base import DomainModel
 
 
-class AbsenceDayOff(BaseModel):
+class AbsenceDayOff(DomainModel):
     id: str
-    date: date
+    date: dt.date
     seconds: Optional[int] = None
 
     # Calendar
     calendar_id: Optional[str] = None
     calendar_year: Optional[int] = None
     calendar_max_days_off: Optional[int] = None
-    calendar_created_at: Optional[datetime] = None
-    calendar_updated_at: Optional[datetime] = None
+    calendar_created_at: Optional[dt.datetime] = None
+    calendar_updated_at: Optional[dt.datetime] = None
 
     # Absence Type
     absence_type_id: Optional[str] = None
     absence_type_name: Optional[str] = None
     absence_type_needs_validation: Optional[bool] = None
-    absence_type_created_at: Optional[datetime] = None
-    absence_type_updated_at: Optional[datetime] = None
+    absence_type_created_at: Optional[dt.datetime] = None
+    absence_type_updated_at: Optional[dt.datetime] = None
     absence_type_created_by: Optional[str] = None
 
     # Employee (resumen)
